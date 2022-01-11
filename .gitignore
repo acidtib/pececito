@@ -1,6 +1,4 @@
 .vscode
 
-base_matched.png
-base_screen.png
-
-template/bob.png
+/catch/*
+!/catch/.keep
