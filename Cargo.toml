@@ -1,0 +1,35 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+default-members = ["crates/pececito"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace.dependencies]
+fishing = { path = "crates/fishing" }
+game = { path = "crates/game" }
+rune = { git = "https://github.com/anomalyco/rune", rev = "f6cf57db95c662c99c40d682a6076f20f18b2f20" }
+rune-kit = { git = "https://github.com/anomalyco/rune", rev = "f6cf57db95c662c99c40d682a6076f20f18b2f20" }
+x11rb = "0.13"
+
+# Cargo doesn't inherit [patch] from a dependency; keep these on the same rev as rune.
+[patch.crates-io]
+wgpu-hal = { git = "https://github.com/anomalyco/rune", rev = "f6cf57db95c662c99c40d682a6076f20f18b2f20" }
+winit = { git = "https://github.com/anomalyco/rune", rev = "f6cf57db95c662c99c40d682a6076f20f18b2f20" }
+parley_engine = { git = "https://github.com/anomalyco/rune", rev = "f6cf57db95c662c99c40d682a6076f20f18b2f20" }
+accesskit_windows = { git = "https://github.com/anomalyco/rune", rev = "f6cf57db95c662c99c40d682a6076f20f18b2f20" }
+accesskit_macos = { git = "https://github.com/anomalyco/rune", rev = "f6cf57db95c662c99c40d682a6076f20f18b2f20" }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+dbg_macro = "deny"
+expect_used = "warn"
+todo = "warn"
+unwrap_used = "warn"
+let_underscore_must_use = "deny"

@@ -1,0 +1,4 @@
+# Rune pins this toolchain; keep them in step when bumping Rune.
+[toolchain]
+channel = "1.99.1"
+components = ["clippy", "rustfmt"]

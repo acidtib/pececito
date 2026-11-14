@@ -1,0 +1,15 @@
+[package]
+name = "pececito"
+description = "Desktop companion for fishing in WoW Forever"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+fishing.workspace = true
+game.workspace = true
+rune.workspace = true
+rune-kit.workspace = true
+
+[lints]
+workspace = true

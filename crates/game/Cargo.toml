@@ -1,0 +1,12 @@
+[package]
+name = "game"
+description = "Finds the WoW Forever client: its process and its window"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+x11rb.workspace = true
+
+[lints]
+workspace = true
