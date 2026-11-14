@@ -18,6 +18,15 @@ cargo run
 
 Settings are saved to `~/.config/pececito/prefs.json`.
 
+## Install
+
+```sh
+script/install-linux
+```
+
+This builds a release binary and installs it to `~/.local/bin`, with the icon and a desktop entry, so
+Pececito shows up in your app launcher with its icon. Set `PREFIX` to install somewhere else.
+
 ## Layout
 
 | Crate | What it does |

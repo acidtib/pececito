@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# Builds a release binary and installs it with its icon and desktop entry under ~/.local.
+# PREFIX overrides the install root (default ~/.local).
+set -euo pipefail
+
+root="$(cd "$(dirname "$0")/.." && pwd)"
+prefix="${PREFIX:-$HOME/.local}"
+
+cargo build --release --manifest-path "$root/Cargo.toml" -p pececito
+
+install -Dm755 "$root/target/release/pececito" "$prefix/bin/pececito"
+# Launchers run Exec with the session's PATH, which often lacks ~/.local/bin; point at the binary.
+mkdir -p "$prefix/share/applications"
+sed "s|^Exec=.*|Exec=$prefix/bin/pececito|" "$root/assets/pececito.desktop" \
+  > "$prefix/share/applications/pececito.desktop"
+chmod 644 "$prefix/share/applications/pececito.desktop"
+install -Dm644 "$root/assets/icon/pececito.svg" "$prefix/share/icons/hicolor/scalable/apps/pececito.svg"
+for size in 16 24 32 48 64 128 256 512; do
+  install -Dm644 "$root/assets/icon/png/pececito-$size.png" \
+    "$prefix/share/icons/hicolor/${size}x${size}/apps/pececito.png"
+done
+
+# Desktops cache icons and entries; refresh what's available so the new icon shows without a relogin.
+if command -v gtk-update-icon-cache >/dev/null; then
+  gtk-update-icon-cache -q -t "$prefix/share/icons/hicolor" || echo "install-linux: icon cache not refreshed" >&2
+fi
+if command -v update-desktop-database >/dev/null; then
+  update-desktop-database -q "$prefix/share/applications" || echo "install-linux: desktop database not refreshed" >&2
+fi
+if command -v kbuildsycoca6 >/dev/null; then
+  kbuildsycoca6 --noincremental >/dev/null 2>&1 || echo "install-linux: KDE menu cache not refreshed" >&2
+fi
+
+echo "Installed pececito to $prefix/bin/pececito."

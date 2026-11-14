@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Pececito
+GenericName=Fishing Companion
+Comment=Fishing companion for WoW Forever
+Exec=pececito
+Icon=pececito
+Terminal=false
+Categories=Game;
+StartupWMClass=pececito

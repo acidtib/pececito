@@ -190,6 +190,8 @@ fn on_key(state: &mut State, event: &KeyEvent, _tx: &mut Tx) -> bool {
 }
 
 fn main() {
+    // Desktops match the window to `pececito.desktop`, and through it to the installed icon.
+    rune::set_app_id(APP_ID);
     rune::run(AppSpec::<State> {
         min_size: Some((380.0, 560.0)),
         setup: Some(setup),
