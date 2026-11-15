@@ -449,6 +449,9 @@ fn fishing_status(card: El, fishing: &Fishing, clock: f64, kit: &Kit) -> El {
             PauseReason::NoPole => {
                 "No fishing pole is equipped. Equip one, then cast by hand or press Resume."
             }
+            PauseReason::Moved => {
+                "Your character moved. Check the game, then cast by hand or press Resume."
+            }
         };
         let resume = Button::new("Resume")
             .variant(ButtonVariant::Neutral)

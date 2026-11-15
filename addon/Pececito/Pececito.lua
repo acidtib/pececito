@@ -10,6 +10,7 @@ local MAGENTA = 5
 local CYAN = 3
 local VERSION_CELLS = 2
 local STATE_CELLS = 1
+local MOVES_CELLS = 1
 local CHECKSUM_CELLS = 2
 local STATE_IDLE = 0
 local STATE_NO_POLE = 1
@@ -23,6 +24,8 @@ local FISHING_POLE_SUBCLASS = 20
 -- Each square's side in screen pixels.
 local CELL_PIXELS = 3
 local UPDATE_INTERVAL = 0.05
+-- Map positions run from 0 to 1 across a zone; a still player's doesn't change at all.
+local MOVE_DISTANCE = 0.0001
 
 -- On WorldFrame, not UIParent: hiding the UI (Alt+Z, or addons that hide it while fishing)
 -- hides UIParent and everything on it.
@@ -32,7 +35,7 @@ strip:SetIgnoreParentScale(true)
 strip:SetPoint("TOPLEFT", WorldFrame, "TOPLEFT", 0, 0)
 
 local cells = {}
-for index = 1, 2 + VERSION_CELLS + STATE_CELLS + CHECKSUM_CELLS do
+for index = 1, 2 + VERSION_CELLS + STATE_CELLS + MOVES_CELLS + CHECKSUM_CELLS do
     cells[index] = strip:CreateTexture(nil, "OVERLAY")
 end
 
@@ -50,12 +53,16 @@ local function put(value, count)
     end
 end
 
+-- How many times the player started moving, which the app watches for a change.
+local moves = 0
+
 local function show(state)
     for index = #payload, 1, -1 do
         payload[index] = nil
     end
     put(VERSION, VERSION_CELLS)
     put(state, STATE_CELLS)
+    put(moves % 8 ^ MOVES_CELLS, MOVES_CELLS)
     -- Each cell times its place, so swapped cells don't pass.
     local sum = 0
     for place, value in ipairs(payload) do
@@ -134,6 +141,44 @@ local function holdsFishingPole()
     return classID == WEAPON_CLASS and subclassID == FISHING_POLE_SUBCLASS
 end
 
+-- The map and the position on it, or nil where the game gives none, as in instances.
+local function position()
+    if not (C_Map and C_Map.GetBestMapForUnit and C_Map.GetPlayerMapPosition) then
+        return nil
+    end
+    local ok, map = pcall(C_Map.GetBestMapForUnit, "player")
+    if not ok or not map then
+        return nil
+    end
+    local found, point = pcall(C_Map.GetPlayerMapPosition, map, "player")
+    if not found or not point then
+        return nil
+    end
+    local x, y = point:GetXY()
+    return map, x, y
+end
+
+local lastMap, lastX, lastY
+local wasMoving = false
+
+-- A walk, a knockback or a teleport each count once, when they start. Speed covers the places
+-- with no map position.
+local function trackMoves()
+    local map, x, y = position()
+    local moving = GetUnitSpeed ~= nil and GetUnitSpeed("player") > 0
+    if map and lastMap then
+        moving = moving
+            or map ~= lastMap
+            or math.abs(x - lastX) > MOVE_DISTANCE
+            or math.abs(y - lastY) > MOVE_DISTANCE
+    end
+    lastMap, lastX, lastY = map, x, y
+    if moving and not wasMoving then
+        moves = moves + 1
+    end
+    wasMoving = moving
+end
+
 local sinceUpdate = 0
 strip:SetScript("OnUpdate", function(_, elapsed)
     sinceUpdate = sinceUpdate + elapsed
@@ -141,6 +186,7 @@ strip:SetScript("OnUpdate", function(_, elapsed)
         return
     end
     sinceUpdate = 0
+    trackMoves()
     if isFishing() then
         show(STATE_FISHING)
     elseif isCasting() then

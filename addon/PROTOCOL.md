@@ -34,6 +34,7 @@ Cells run left to right from the corner of the window:
 | 1     | Cyan (3)      | Marks the strip.                                         |
 | 2     | Addon version | The `## Version` in `Pececito.toc`.                      |
 | 1     | Player state  | 0 idle, 1 no fishing pole, 2 other cast, 3 fishing.      |
+| 1     | Moves         | Goes up by one each time the player starts moving.       |
 | 2     | Checksum      | See below.                                               |
 
 The two markers and the version never move. Everything after the version belongs to that version:

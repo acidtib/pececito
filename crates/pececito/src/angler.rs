@@ -104,6 +104,7 @@ impl Fishing<'_> {
         let mut activity = Activity::Idle;
         // A change counts once two reads in a row agree; single reads flicker as the channel ends.
         let mut previous_read = None;
+        let mut moves = None;
         let mut signal_read = Instant::now();
         let mut signal_seen = Instant::now();
         loop {
@@ -137,6 +138,10 @@ impl Fishing<'_> {
                     None => {}
                     Some(frame) => {
                         if read == previous_read {
+                            if moves.is_some_and(|moves| moves != frame.moves) {
+                                run.moved(now);
+                            }
+                            moves = Some(frame.moves);
                             activity = match frame.state {
                                 PlayerState::Fishing => Activity::Fishing,
                                 PlayerState::Busy => Activity::Busy,

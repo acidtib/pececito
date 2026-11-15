@@ -19,12 +19,15 @@ const MAGENTA: u32 = 5;
 const CYAN: u32 = 3;
 const VERSION_CELLS: usize = 2;
 const STATE_CELLS: usize = 1;
+const MOVES_CELLS: usize = 1;
 const CHECKSUM_CELLS: usize = 2;
 
 /// What the Pececito addon shows in the game.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Frame {
     pub state: PlayerState,
+    /// Goes up by one, wrapping around, each time the player starts moving.
+    pub moves: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -269,7 +272,8 @@ fn decode(data: &[u8], width: usize) -> Option<Frame> {
         3 => PlayerState::Fishing,
         _ => return None,
     };
-    cells.checksum_matches().then_some(Frame { state })
+    let moves = cells.number(MOVES_CELLS)?;
+    cells.checksum_matches().then_some(Frame { state, moves })
 }
 
 #[cfg(test)]
@@ -292,8 +296,13 @@ mod tests {
 
     /// The strip's cells for a state, as this build's addon draws them.
     fn strip(state: u32) -> Vec<u32> {
+        strip_with(state, 0)
+    }
+
+    fn strip_with(state: u32, moves: u32) -> Vec<u32> {
         let mut payload = digits(addon_version().unwrap_or(0), 2);
         payload.push(state);
+        payload.push(moves);
         let sum: u32 = payload
             .iter()
             .zip(1..)
@@ -335,8 +344,15 @@ mod tests {
             PlayerState::Fishing,
         ];
         for (number, state) in (0..).zip(states) {
-            assert_eq!(read(&strip(number), SIDE, 0), Some(Frame { state }));
+            assert_eq!(
+                read(&strip(number), SIDE, 0),
+                Some(Frame { state, moves: 0 })
+            );
         }
+        assert_eq!(
+            read(&strip_with(0, 6), SIDE, 0).map(|frame| frame.moves),
+            Some(6)
+        );
         assert_eq!(read(&strip(4), SIDE, 0), None, "no such state");
     }
 
@@ -344,6 +360,7 @@ mod tests {
     fn reads_drifted_colors_and_other_cell_sizes() {
         let frame = Some(Frame {
             state: PlayerState::Fishing,
+            moves: 0,
         });
         assert_eq!(read(&strip(3), SIDE, 100), frame);
         assert_eq!(read(&strip(3), 1, 0), frame);
@@ -449,7 +466,7 @@ mod tests {
             });
         assert_eq!(
             (addon_version(), fingerprint),
-            (Some(2), 6_918_506_833_127_053_398)
+            (Some(2), 10_802_587_795_968_827_633)
         );
     }
 }

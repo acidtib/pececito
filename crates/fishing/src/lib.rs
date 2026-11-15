@@ -173,6 +173,8 @@ pub enum PauseReason {
     NoCast,
     /// The player has no fishing pole in hand.
     NoPole,
+    /// The player moved, or was moved.
+    Moved,
 }
 
 /// What the game shows the player doing.
@@ -340,6 +342,16 @@ impl Run {
         if let Phase::Paused(_) = self.phase {
             self.enter(Phase::Ready, now);
         }
+    }
+
+    /// The player moved, or was moved; a cast in progress is over.
+    pub fn moved(&mut self, now: f64) {
+        match self.phase {
+            Phase::Paused(_) => return,
+            Phase::Waiting | Phase::Hooking => self.finish(Outcome::Interrupted),
+            Phase::Ready | Phase::Casting | Phase::Busy | Phase::Looting => {}
+        }
+        self.enter(Phase::Paused(PauseReason::Moved), now);
     }
 
     /// Takes in what the game shows the player doing.
@@ -805,6 +817,42 @@ mod tests {
         assert_eq!(run.phase, Phase::Waiting);
         assert!(!run.key_due(now), "pressing now would reel the line in");
         assert_eq!(run.casts(), 2);
+    }
+
+    #[test]
+    fn moving_pauses_from_any_phase() {
+        let mut run = Run::new(0.0, HookDelay::Medium, 7);
+        run.moved(0.0);
+        assert_eq!(run.phase, Phase::Paused(PauseReason::Moved));
+        assert!(run.history.is_empty());
+        run.resume(0.0);
+
+        let now = cast(&mut run, 0.0);
+        let now = play(&mut run, now, 4.0, quiet(), Activity::Fishing);
+        run.moved(now);
+        assert_eq!(run.phase, Phase::Paused(PauseReason::Moved));
+        assert_eq!(last_outcome(&run), Some(Outcome::Interrupted));
+        let now = play(&mut run, now, 0.2, quiet(), Activity::Fishing);
+        assert_eq!(
+            run.phase,
+            Phase::Paused(PauseReason::Moved),
+            "the old channel shows a moment longer"
+        );
+        let now = play(&mut run, now, 5.0, quiet(), Activity::Idle);
+        assert!(!run.key_due(now));
+        assert_eq!(run.history.len(), 1);
+
+        run.moved(now);
+        run.resume(now);
+        assert!(run.key_due(now));
+    }
+
+    #[test]
+    fn a_pause_keeps_its_reason_when_the_player_moves() {
+        let mut run = Run::new(0.0, HookDelay::Medium, 7);
+        let now = play(&mut run, 0.0, FRAME, quiet(), Activity::NoPole);
+        run.moved(now);
+        assert_eq!(run.phase, Phase::Paused(PauseReason::NoPole));
     }
 
     #[test]

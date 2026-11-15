@@ -107,6 +107,7 @@ pub fn detect() -> Result<Detection, String> {
             Ok(None) => AddonState::NotShowing,
             Ok(Some(Frame {
                 state: PlayerState::NoPole,
+                ..
             })) => AddonState::NoPole,
             Ok(Some(_)) => AddonState::Showing,
             Err(error) => AddonState::Unreadable(error),
