@@ -64,9 +64,33 @@ pub fn install_addon(process: &GameProcess) -> Result<PathBuf, String> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AddonFiles {
     Missing,
-    /// All there, but not this build's: an older or newer release wrote them, or they were edited.
-    Different,
+    Different(AddonMismatch),
     Current,
+}
+
+/// How installed addon files differ from the ones this build installs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AddonMismatch {
+    /// An older release of the app wrote them.
+    Older { installed: u32, shipped: u32 },
+    /// A newer release of the app wrote them.
+    Newer { installed: u32, shipped: u32 },
+    /// The version is this build's, or can't be read, but the files aren't: they were changed
+    /// by hand.
+    Edited,
+}
+
+/// The version of the addon this build installs.
+pub fn addon_version() -> Option<u32> {
+    toc_version(TOC.as_bytes())
+}
+
+/// The `## Version` line of a `.toc` file.
+fn toc_version(toc: &[u8]) -> Option<u32> {
+    String::from_utf8_lossy(toc)
+        .lines()
+        .find_map(|line| line.strip_prefix("## Version:"))
+        .and_then(|version| version.trim().parse().ok())
 }
 
 pub fn addon_files(process: &GameProcess) -> AddonFiles {
@@ -84,17 +108,30 @@ fn addon_files_in(game: &Path) -> AddonFiles {
         ("Icon.png", ICON),
     ];
     let mut current = true;
+    let mut installed = None;
     for (name, expected) in files {
         match fs::read(folder.join(name)) {
-            Ok(contents) => current &= contents == expected,
+            Ok(contents) => {
+                current &= contents == expected;
+                if name.ends_with(".toc") {
+                    installed = toc_version(&contents);
+                }
+            }
             Err(_) => return AddonFiles::Missing,
         }
     }
     if current {
-        AddonFiles::Current
-    } else {
-        AddonFiles::Different
+        return AddonFiles::Current;
     }
+    AddonFiles::Different(match (installed, addon_version()) {
+        (Some(installed), Some(shipped)) if installed < shipped => {
+            AddonMismatch::Older { installed, shipped }
+        }
+        (Some(installed), Some(shipped)) if installed > shipped => {
+            AddonMismatch::Newer { installed, shipped }
+        }
+        _ => AddonMismatch::Edited,
+    })
 }
 
 /// Reads the addon's squares from the game window, keeping one X connection for repeated reads.
@@ -224,15 +261,58 @@ mod tests {
         fs::create_dir_all(&folder)?;
         let before = addon_files_in(&game);
         fs::write(folder.join("Pececito.toc"), TOC)?;
-        fs::write(folder.join("Pececito.lua"), "-- an older release")?;
+        fs::write(folder.join("Pececito.lua"), "-- changed by hand")?;
         fs::write(folder.join("Icon.png"), ICON)?;
+        let edited = addon_files_in(&game);
+        fs::write(folder.join("Pececito.toc"), "## Version: 0\n")?;
         let older = addon_files_in(&game);
+        fs::write(
+            folder.join("Pececito.toc"),
+            "## Title: Pececito\n## Version: 4000000000\n",
+        )?;
+        let newer = addon_files_in(&game);
+        fs::write(folder.join("Pececito.toc"), TOC)?;
         fs::write(folder.join("Pececito.lua"), LUA)?;
         let after = addon_files_in(&game);
         fs::remove_dir_all(&game)?;
+        let Some(shipped) = addon_version() else {
+            panic!("Pececito.toc has no version")
+        };
         assert_eq!(before, AddonFiles::Missing);
-        assert_eq!(older, AddonFiles::Different);
+        assert_eq!(edited, AddonFiles::Different(AddonMismatch::Edited));
+        assert_eq!(
+            older,
+            AddonFiles::Different(AddonMismatch::Older {
+                installed: 0,
+                shipped
+            })
+        );
+        assert_eq!(
+            newer,
+            AddonFiles::Different(AddonMismatch::Newer {
+                installed: 4_000_000_000,
+                shipped
+            })
+        );
         assert_eq!(after, AddonFiles::Current);
         Ok(())
+    }
+
+    /// The app tells an old addon from its own by the version, so a changed addon needs a new
+    /// one: bump `## Version` in the `.toc`, then update both numbers here.
+    #[test]
+    fn a_changed_addon_has_a_new_version() {
+        let fingerprint = [TOC.as_bytes(), LUA.as_bytes(), ICON]
+            .iter()
+            .flat_map(|file| file.iter())
+            // A Windows checkout may turn line ends into CRLF.
+            .filter(|byte| **byte != b'\r')
+            .fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
+                (hash ^ u64::from(*byte)).wrapping_mul(0x0100_0000_01b3)
+            });
+        assert_eq!(
+            (addon_version(), fingerprint),
+            (Some(1), 1_145_592_705_240_569_727)
+        );
     }
 }

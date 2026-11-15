@@ -454,7 +454,7 @@ impl State {
         // The next scan says the same once it runs; the game shows it after /reload.
         if let Some(Ok(())) = installed
             && let Game::Detected(Detection::Found(_, addon)) = &mut self.game
-            && matches!(addon, AddonState::NotInstalled | AddonState::Outdated)
+            && matches!(addon, AddonState::NotInstalled | AddonState::Mismatched(_))
         {
             *addon = AddonState::NotShowing;
         }

@@ -35,7 +35,7 @@ mod window;
 use std::path::Path;
 
 use addon::{AddonFiles, addon_files};
-pub use addon::{Signal, SignalReader, install_addon};
+pub use addon::{AddonMismatch, Signal, SignalReader, addon_version, install_addon};
 pub use audio::{CHUNK_FRAMES, GameAudio, SAMPLE_RATE};
 pub use keyboard::{Keyboard, Keystroke};
 pub use watcher::Watcher;
@@ -70,7 +70,7 @@ pub struct GameWindow {
 pub enum AddonState {
     NotInstalled,
     /// Installed, but not the files this build installs, so its squares may mean something else.
-    Outdated,
+    Mismatched(AddonMismatch),
     /// The game window can't be read, as when it's minimized or partly off-screen, so the
     /// squares can't be looked for.
     Unreadable(String),
@@ -102,7 +102,7 @@ pub fn detect() -> Result<Detection, String> {
     };
     let addon = match addon_files(&process) {
         AddonFiles::Missing => AddonState::NotInstalled,
-        AddonFiles::Different => AddonState::Outdated,
+        AddonFiles::Different(mismatch) => AddonState::Mismatched(mismatch),
         AddonFiles::Current => match SignalReader::new(&window).and_then(|reader| reader.read()) {
             Ok(Signal::Missing) => AddonState::NotShowing,
             Ok(Signal::NoPole) => AddonState::NoPole,

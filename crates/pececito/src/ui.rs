@@ -12,7 +12,7 @@ use rune_kit::{
 
 use crate::{Fishing, Game, Screen, Session, State, StopReason};
 use fishing::{CAST_LENGTH, HookDelay, Outcome, PauseReason, Phase};
-use game::{AddonState, Detection};
+use game::{AddonMismatch, AddonState, Detection};
 
 /// Points square; the logo is rasterized at this size.
 pub const LOGO_SIZE: f32 = 56.0;
@@ -336,17 +336,32 @@ fn status_card(state: &State, kit: &Kit) -> El {
                 .child(message("Install Pececito's addon", detail, color))
                 .child(row().child(install_button(state, kit)));
         }
-        Some(AddonState::Outdated) => {
-            let (detail, color) = match state.install_error() {
-                Some(error) => (format!("Couldn't update: {error}"), c.danger.fg),
-                None => (
-                    "The addon in the game isn't the one this version of Pececito reads. Update it, then type /reload in the game chat."
+        Some(AddonState::Mismatched(mismatch)) => {
+            let (headline, advice) = match mismatch {
+                AddonMismatch::Older { installed, shipped } => (
+                    "Update Pececito's addon",
+                    format!(
+                        "The game has version {installed} and this Pececito reads version {shipped}. Update it, then type /reload in the game chat."
+                    ),
+                ),
+                AddonMismatch::Newer { installed, shipped } => (
+                    "Update Pececito",
+                    format!(
+                        "The game has addon version {installed}, newer than the version {shipped} this Pececito reads. Update Pececito, or reinstall the addon to go back to version {shipped}."
+                    ),
+                ),
+                AddonMismatch::Edited => (
+                    "Reinstall Pececito's addon",
+                    "The addon's files in the game were changed. Reinstall it, then type /reload in the game chat."
                         .to_string(),
-                    c.text_muted,
                 ),
             };
+            let (detail, color) = match state.install_error() {
+                Some(error) => (format!("Couldn't install: {error}"), c.danger.fg),
+                None => (advice, c.text_muted),
+            };
             return card
-                .child(message("Update Pececito's addon", detail, color))
+                .child(message(headline, detail, color))
                 .child(row().child(install_button(state, kit)));
         }
         Some(AddonState::Unreadable(error)) => {
@@ -1001,6 +1016,9 @@ fn fishing_key_setting(state: &State, kit: &Kit) -> El {
 
 fn addon_setting(state: &State, kit: &Kit) -> El {
     let c = &kit.c;
+    let installed = game::addon_version().map_or("Installed".to_string(), |version| {
+        format!("Version {version} installed")
+    });
     let (description, color) = match (state.install_error(), state.addon()) {
         (Some(error), _) => (format!("Couldn't install: {error}"), c.danger.fg),
         (None, None) => ("Open the game to install it.".to_string(), c.text_muted),
@@ -1008,21 +1026,33 @@ fn addon_setting(state: &State, kit: &Kit) -> El {
             "Not installed. The addon lets Pececito see when you're fishing.".to_string(),
             c.warning.fg,
         ),
-        (None, Some(AddonState::Outdated)) => (
-            "Installed, but not this version's. Update it, then type /reload in the game chat."
+        (None, Some(AddonState::Mismatched(AddonMismatch::Older { installed, shipped }))) => (
+            format!(
+                "Version {installed} installed. Update it to version {shipped}, then type /reload in the game chat."
+            ),
+            c.warning.fg,
+        ),
+        (None, Some(AddonState::Mismatched(AddonMismatch::Newer { installed, shipped }))) => (
+            format!(
+                "Version {installed} installed, newer than this Pececito's version {shipped}. Update Pececito, or reinstall to go back."
+            ),
+            c.warning.fg,
+        ),
+        (None, Some(AddonState::Mismatched(AddonMismatch::Edited))) => (
+            "Installed, but its files were changed. Reinstall it, then type /reload in the game chat."
                 .to_string(),
             c.warning.fg,
         ),
         (None, Some(AddonState::NotShowing)) => (
-            "Installed. Type /reload in the game chat to load it.".to_string(),
+            format!("{installed}. Type /reload in the game chat to load it."),
             c.text_muted,
         ),
         (None, Some(AddonState::Unreadable(_))) => (
-            "Installed. Pececito can't see the game window to check that it's running.".to_string(),
+            format!("{installed}. Pececito can't see the game window to check that it's running."),
             c.text_muted,
         ),
         (None, Some(AddonState::Showing | AddonState::NoPole)) => {
-            ("Installed and running.".to_string(), c.text_muted)
+            (format!("{installed} and running."), c.text_muted)
         }
     };
     row()
@@ -1036,9 +1066,10 @@ fn addon_setting(state: &State, kit: &Kit) -> El {
 fn install_button(state: &State, kit: &Kit) -> El {
     let label = match state.addon() {
         _ if state.is_installing() => "Installing",
-        Some(AddonState::Outdated) => "Update",
+        Some(AddonState::Mismatched(AddonMismatch::Older { .. })) => "Update",
         Some(
-            AddonState::NotShowing
+            AddonState::Mismatched(AddonMismatch::Newer { .. } | AddonMismatch::Edited)
+            | AddonState::NotShowing
             | AddonState::Unreadable(_)
             | AddonState::NoPole
             | AddonState::Showing,
