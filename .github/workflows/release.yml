@@ -68,11 +68,11 @@ jobs:
         shell: bash
         run: echo "VERSION=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)" >> "$GITHUB_ENV"
 
-      # Laid out like ~/.local, so extracting it there installs the app, its icon and its launcher entry.
+      # Unpacks to ~/.local/pececito.app; script/install.sh links it into ~/.local.
       - name: Package for Linux
         if: runner.os == 'Linux'
         run: |
-          name="pececito-linux-x86_64"
+          name="pececito.app"
           install -Dm755 "target/${{ matrix.target }}/release/pececito" "$name/bin/pececito"
           install -Dm644 assets/pececito.desktop "$name/share/applications/pececito.desktop"
           install -Dm644 assets/icon/pececito.svg "$name/share/icons/hicolor/scalable/apps/pececito.svg"
@@ -80,8 +80,8 @@ jobs:
             install -Dm644 "assets/icon/png/pececito-$size.png" \
               "$name/share/icons/hicolor/${size}x${size}/apps/pececito.png"
           done
-          tar -czf "$name.tar.gz" "$name"
-          echo "DOWNLOAD=$name.tar.gz" >> "$GITHUB_ENV"
+          tar -czf pececito-linux-x86_64.tar.gz "$name"
+          echo "DOWNLOAD=pececito-linux-x86_64.tar.gz" >> "$GITHUB_ENV"
 
       - name: Package for Windows
         if: runner.os == 'Windows'

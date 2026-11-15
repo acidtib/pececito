@@ -2,7 +2,26 @@
 
 A desktop companion for fishing in WoW Forever. It finds the running game client and fishes for you: it presses your fishing key to cast, listens to the game's sound for the splash of a bite, and presses the key again to hook.
 
-Status: fishing works on Linux, at quiet spots and next to other players fishing. Windows isn't supported yet.
+Fishing works on Linux, at quiet spots and next to other players fishing. The Windows build opens, but it can't find the game or press keys yet. There's no macOS build yet.
+
+## Install
+
+On Linux:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/acidtib/pececito/main/script/install.sh | sh
+```
+
+This installs the latest release to `~/.local/pececito.app`, links `pececito` into `~/.local/bin`, and adds Pececito to your app launcher. Run it again to update. On KDE it also adds a window rule so KWin remembers where you put the window. Set `PECECITO_VERSION=0.2.0` to install a specific release.
+
+On Windows, download and run `Pececito-x86_64.exe` from the [latest release](https://github.com/acidtib/pececito/releases/latest). It installs for your user only, with a Start menu shortcut and an uninstaller.
+
+To fish, Pececito needs:
+
+* PipeWire, with `pw-dump` and `pw-record` on the `PATH`. Pececito records the game's own audio stream.
+* Write access to `/dev/uinput`, for the virtual keyboard that presses the fishing key. Most desktops give it to the logged-in user; check with `getfacl /dev/uinput`.
+
+Settings are saved to `~/.config/pececito/prefs.json`.
 
 ## How to fish
 
@@ -19,40 +38,6 @@ Pececito can't tell what you caught. It counts casts and the bites it hooked.
 
 The Pececito addon (`addon/Pececito`) draws three 3 by 3 pixel squares in the top-left corner of the game. Their colors tell the app whether you're fishing, casting something else (such as a lure), or holding no fishing pole. The app reads only that corner of the game window. The squares stay visible when the game's UI is hidden.
 
-## Requirements
-
-* Linux with an X11 or XWayland session. The game runs through Proton, so its window is an XWayland window.
-* PipeWire, with `pw-dump` and `pw-record` on the `PATH`. Pececito records the game's own audio stream.
-* Write access to `/dev/uinput`, for the virtual keyboard that presses the fishing key. Most desktops give it to the logged-in user; check with `getfacl /dev/uinput`.
-* Rust; `rust-toolchain.toml` pins the version.
-* Build dependencies for Rune. On Arch and CachyOS: `pacman -S libxkbcommon wayland`.
-
-## Run
-
-```sh
-cargo run
-```
-
-Settings are saved to `~/.config/pececito/prefs.json`.
-
-## Download
-
-Each release on GitHub has:
-
-* `pececito-linux-x86_64.tar.gz`: extract it into `~/.local` (`tar -xzf pececito-linux-x86_64.tar.gz --strip-components=1 -C ~/.local`) to install the app, its icon and its launcher entry. `~/.local/bin` needs to be on your `PATH` for the launcher entry to start it.
-* `Pececito-x86_64.exe`: the Windows installer. It installs for your user only, with a Start menu shortcut and an uninstaller. The Windows build opens, but it can't find the game or press keys yet.
-
-The newest build is always at `https://github.com/acidtib/pececito/releases/latest/download/<file name>`.
-
-## Install from source
-
-```sh
-script/install-linux
-```
-
-This builds a release binary and installs it to `~/.local/bin`, with the icon and a desktop entry, so
-Pececito shows up in your app launcher with its icon. Set `PREFIX` to install somewhere else.
-
 ## Layout
 
 | Path | What it does |
@@ -65,6 +50,7 @@ Pececito shows up in your app launcher with its icon. Set `PREFIX` to install so
 ## Develop
 
 ```sh
+cargo run
 cargo clippy --workspace --all-targets
 cargo test --workspace
 cargo test -p game -- --ignored --nocapture   # with the game running
