@@ -503,7 +503,8 @@ mod tests {
         let Some(version) = addon_version() else {
             panic!("Pececito.toc has no version")
         };
-        assert!(LUA.contains(&format!("local VERSION = {version}\n")));
+        let line = format!("local VERSION = {version}");
+        assert!(LUA.lines().any(|candidate| candidate == line));
     }
 
     #[test]
