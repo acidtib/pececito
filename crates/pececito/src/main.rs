@@ -1,3 +1,6 @@
+// Release builds on Windows open without a console window; debug builds keep it for error output.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 mod angler;
 mod settings;
 mod ui;
