@@ -9,10 +9,12 @@ edition = "2024"
 publish = false
 
 [workspace.dependencies]
+evdev = "0.13"
 fishing = { path = "crates/fishing" }
 game = { path = "crates/game" }
 rune = { git = "https://github.com/anomalyco/rune", rev = "f6cf57db95c662c99c40d682a6076f20f18b2f20" }
 rune-kit = { git = "https://github.com/anomalyco/rune", rev = "f6cf57db95c662c99c40d682a6076f20f18b2f20" }
+serde_json = "1"
 x11rb = "0.13"
 
 # Cargo doesn't inherit [patch] from a dependency; keep these on the same rev as rune.

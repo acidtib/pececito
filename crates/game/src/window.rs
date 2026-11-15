@@ -62,7 +62,56 @@ pub(crate) fn find_window(process: &GameProcess) -> Result<Option<GameWindow>, S
     Ok(None)
 }
 
+/// Checks whether a window has keyboard focus, keeping one X connection for repeated checks.
+pub struct FocusReader {
+    connection: RustConnection,
+    root: Window,
+    active_window: u32,
+    window: Window,
+}
+
+impl FocusReader {
+    pub fn new(window: &GameWindow) -> Result<Self, String> {
+        let (connection, screen_number) =
+            x11rb::connect(None).map_err(|error| format!("connecting to the X server: {error}"))?;
+        let root = connection
+            .setup()
+            .roots
+            .get(screen_number)
+            .ok_or_else(|| format!("X screen {screen_number} does not exist"))?
+            .root;
+        let active_window = Atoms::intern(&connection)?.active_window;
+        Ok(FocusReader {
+            connection,
+            root,
+            active_window,
+            window: window.window_id,
+        })
+    }
+
+    /// The X11 window with keyboard focus. While a native Wayland window has focus, XWayland
+    /// reports none.
+    pub fn active_window(&self) -> Result<Option<u32>, String> {
+        let active = get_property(
+            &self.connection,
+            self.root,
+            self.active_window,
+            AtomEnum::WINDOW.into(),
+            1,
+        )?
+        .value32()
+        .and_then(|mut values| values.next());
+        Ok(active.filter(|window| *window != 0))
+    }
+
+    /// Whether keystrokes go to the window now.
+    pub fn has_focus(&self) -> Result<bool, String> {
+        Ok(self.active_window()? == Some(self.window))
+    }
+}
+
 struct Atoms {
+    active_window: u32,
     client_list: u32,
     wm_pid: u32,
     wm_name: u32,
@@ -81,6 +130,7 @@ impl Atoms {
                 .atom)
         };
         Ok(Atoms {
+            active_window: intern("_NET_ACTIVE_WINDOW")?,
             client_list: intern("_NET_CLIENT_LIST")?,
             wm_pid: intern("_NET_WM_PID")?,
             wm_name: intern("_NET_WM_NAME")?,

@@ -50,8 +50,6 @@ detection, input) unless asked.
   `poll`; assigning to `runtime.state` leaves the old buttons, with their old disabled state, on screen.
   `Runtime::new` doesn't run the app's `poll` either: a test that needs time to pass calls
   `runtime.update(|state, tx| { poll(state, tx.clock(), tx); })` between frames.
-* `crates/fishing/src/mock.rs` is a stand-in for the fishing loop, there only so the UI has a moving session to show.
-  Replace it with the real loop rather than building features on top of it.
 
 # Rust coding guidelines
 

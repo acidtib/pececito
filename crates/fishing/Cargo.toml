@@ -1,6 +1,6 @@
 [package]
 name = "fishing"
-description = "The fishing loop: casts, bites, catches and sessions"
+description = "The fishing loop: when to press the fishing key, from the time and the game's sound"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true

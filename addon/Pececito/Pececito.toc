@@ -1,0 +1,8 @@
+## Interface: 16001
+## Title: Pececito
+## Notes: Companion addon for the Pececito desktop app.
+## Category: Professions
+## IconTexture: Interface\AddOns\Pececito\Icon.png
+## Version: 1
+
+Pececito.lua
