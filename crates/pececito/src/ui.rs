@@ -481,7 +481,8 @@ fn fishing_status(card: El, fishing: &Fishing, clock: f64, kit: &Kit) -> El {
     let left = run
         .waited(now)
         .map(|waited| (CAST_LENGTH - waited).clamp(0.0, CAST_LENGTH));
-    let progress = left.map_or(0.0, |left| (left / CAST_LENGTH) as f32);
+    // The bar fills left to right like the steps under it, while the text counts down.
+    let progress = left.map_or(0.0, |left| (1.0 - left / CAST_LENGTH) as f32);
     let (headline, timer) = if fishing.has_focus {
         let timer = left.map_or(String::new(), |left| format!("{left:.1}s"));
         (run.phase.headline(), timer)
