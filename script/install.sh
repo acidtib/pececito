@@ -57,9 +57,11 @@ linux() {
         download "$base/pececito-linux-$arch.tar.gz" "$temp/pececito.tar.gz"
     fi
 
+    # Unpack first, so a broken download leaves the installed app alone.
+    mkdir -p "$temp/unpacked" "$HOME/.local"
+    tar -xzf "$temp/pececito.tar.gz" -C "$temp/unpacked"
     rm -rf "$app"
-    mkdir -p "$HOME/.local"
-    tar -xzf "$temp/pececito.tar.gz" -C "$HOME/.local"
+    mv "$temp/unpacked/pececito.app" "$app"
 
     mkdir -p "$HOME/.local/bin" "$HOME/.local/share/applications"
     ln -sf "$app/bin/pececito" "$HOME/.local/bin/pececito"
@@ -78,7 +80,7 @@ linux() {
         kbuildsycoca6 --noincremental >/dev/null 2>&1 || echo "The KDE menu wasn't refreshed; it updates on your next login."
     fi
 
-    remember_window_position_on_kde
+    remember_window_position_on_kde || echo "The KDE window rule wasn't saved, so Pececito's window may not reopen where you left it."
 
     echo "Pececito is installed. Open it from your app launcher, or run 'pececito'."
     case ":$PATH:" in
@@ -93,17 +95,19 @@ remember_window_position_on_kde() {
         return 0
     fi
     rule="pececito-position"
-    rules="$(kreadconfig6 --file kwinrulesrc --group General --key rules)"
+    rules="$(kreadconfig6 --file kwinrulesrc --group General --key rules)" || return 1
     case ",$rules," in
         *",$rule,"*) ;;
         *) rules="${rules:+$rules,}$rule" ;;
     esac
-    kwriteconfig6 --file kwinrulesrc --group "$rule" --key Description "Pececito: remember position"
-    kwriteconfig6 --file kwinrulesrc --group "$rule" --key wmclass "pececito"
-    kwriteconfig6 --file kwinrulesrc --group "$rule" --key wmclassmatch 1
-    kwriteconfig6 --file kwinrulesrc --group "$rule" --key positionrule 4
-    kwriteconfig6 --file kwinrulesrc --group General --key rules "$rules"
-    kwriteconfig6 --file kwinrulesrc --group General --key count "$(echo "$rules" | tr ',' '\n' | grep -c .)"
+    # Called with ||, which turns set -e off in here, so each step checks itself.
+    kwriteconfig6 --file kwinrulesrc --group "$rule" --key Description "Pececito: remember position" &&
+        kwriteconfig6 --file kwinrulesrc --group "$rule" --key wmclass "pececito" &&
+        kwriteconfig6 --file kwinrulesrc --group "$rule" --key wmclassmatch 1 &&
+        kwriteconfig6 --file kwinrulesrc --group "$rule" --key positionrule 4 &&
+        kwriteconfig6 --file kwinrulesrc --group General --key rules "$rules" &&
+        kwriteconfig6 --file kwinrulesrc --group General --key count "$(echo "$rules" | tr ',' '\n' | grep -c .)" ||
+        return 1
     if command -v qdbus6 >/dev/null 2>&1; then
         qdbus6 org.kde.KWin /KWin reconfigure >/dev/null 2>&1 || echo "KWin didn't reload its window rules; they apply on your next login."
     fi
