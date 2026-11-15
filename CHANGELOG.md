@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.0](https://github.com/acidtib/pececito/compare/v1.0.0...v1.1.0) (2026-11-15)
+
+
+### Features
+
+* **game:** name fishing loot before the game saves its names ([01f05a2](https://github.com/acidtib/pececito/commit/01f05a2d13730a152288e89c3661a22fde7b9ffe))
+
 ## [1.0.0](https://github.com/acidtib/pececito/compare/v0.3.0...v1.0.0) (2026-11-15)
 
 
