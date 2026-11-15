@@ -41,9 +41,7 @@ impl Watcher {
             thread: Some(thread),
         }
     }
-}
 
-impl Watcher {
     /// The results that arrived since the last call, oldest first.
     pub fn drain(&self) -> Vec<Result<Detection, String>> {
         self.results.try_iter().collect()
