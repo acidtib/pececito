@@ -1,7 +1,20 @@
--- Three squares in the top-left corner of the screen, which the Pececito desktop app reads.
--- Magenta and cyan mark the strip; the middle square is green while the fishing channel runs,
--- yellow during any other cast (such as applying a lure), red with no fishing pole in hand, and
--- blue otherwise. The app looks for these exact colors, so keep them in sync with it.
+-- A strip of squares in the top-left corner of the screen, which the Pececito desktop app reads.
+-- Each square is a cell carrying three bits as a color: red is 4, green is 2, blue is 1, each on
+-- or off. The strip opens with a magenta and a cyan cell, then holds numbers written across one
+-- or more cells, most significant first: the addon version, the fields below, and a checksum.
+-- The app reads the same layout, so change both together and give the addon a new version.
+
+-- The "## Version" in Pececito.toc.
+local VERSION = 2
+local MAGENTA = 5
+local CYAN = 3
+local VERSION_CELLS = 2
+local STATE_CELLS = 1
+local CHECKSUM_CELLS = 2
+local STATE_IDLE = 0
+local STATE_NO_POLE = 1
+local STATE_BUSY = 2
+local STATE_FISHING = 3
 
 local FISHING_SPELLS = { [7620] = true, [131474] = true, [131476] = true }
 local MAIN_HAND_SLOT = 16
@@ -19,16 +32,42 @@ strip:SetIgnoreParentScale(true)
 strip:SetPoint("TOPLEFT", WorldFrame, "TOPLEFT", 0, 0)
 
 local cells = {}
-local function cell(red, green, blue)
-    local texture = strip:CreateTexture(nil, "OVERLAY")
-    texture:SetColorTexture(red, green, blue, 1)
-    cells[#cells + 1] = texture
-    return texture
+for index = 1, 2 + VERSION_CELLS + STATE_CELLS + CHECKSUM_CELLS do
+    cells[index] = strip:CreateTexture(nil, "OVERLAY")
 end
 
-cell(1, 0, 1)
-local state = cell(0, 0, 1)
-cell(0, 1, 1)
+local function paint(index, value)
+    local red = value >= 4 and 1 or 0
+    local green = value % 4 >= 2 and 1 or 0
+    cells[index]:SetColorTexture(red, green, value % 2, 1)
+end
+
+-- The cells after the two markers.
+local payload = {}
+local function put(value, count)
+    for place = count - 1, 0, -1 do
+        payload[#payload + 1] = math.floor(value / 8 ^ place) % 8
+    end
+end
+
+local function show(state)
+    for index = #payload, 1, -1 do
+        payload[index] = nil
+    end
+    put(VERSION, VERSION_CELLS)
+    put(state, STATE_CELLS)
+    -- Each cell times its place, so swapped cells don't pass.
+    local sum = 0
+    for place, value in ipairs(payload) do
+        sum = sum + place * value
+    end
+    put(sum % 8 ^ CHECKSUM_CELLS, CHECKSUM_CELLS)
+    paint(1, MAGENTA)
+    paint(2, CYAN)
+    for index, value in ipairs(payload) do
+        paint(index + 2, value)
+    end
+end
 
 -- At scale 1 the screen is 768 units tall, so a pixel is 768 / height units.
 local function layout()
@@ -43,6 +82,7 @@ local function layout()
 end
 
 layout()
+show(STATE_IDLE)
 strip:RegisterEvent("DISPLAY_SIZE_CHANGED")
 strip:RegisterEvent("UI_SCALE_CHANGED")
 strip:SetScript("OnEvent", layout)
@@ -102,12 +142,12 @@ strip:SetScript("OnUpdate", function(_, elapsed)
     end
     sinceUpdate = 0
     if isFishing() then
-        state:SetColorTexture(0, 1, 0, 1)
+        show(STATE_FISHING)
     elseif isCasting() then
-        state:SetColorTexture(1, 1, 0, 1)
+        show(STATE_BUSY)
     elseif not holdsFishingPole() then
-        state:SetColorTexture(1, 0, 0, 1)
+        show(STATE_NO_POLE)
     else
-        state:SetColorTexture(0, 0, 1, 1)
+        show(STATE_IDLE)
     end
 end)

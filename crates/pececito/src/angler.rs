@@ -3,7 +3,7 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use fishing::{Activity, HookDelay, Level, Run};
-use game::{FocusReader, GameAudio, GameWindow, Keyboard, Keystroke, Signal, SignalReader};
+use game::{FocusReader, GameAudio, GameWindow, Keyboard, Keystroke, PlayerState, SignalReader};
 
 /// The longest the loop goes without a tick when the game sends no sound.
 const TICK: Duration = Duration::from_millis(50);
@@ -89,7 +89,7 @@ impl Fishing<'_> {
         let started = Instant::now();
         let signal = SignalReader::new(self.window)?;
         let focus_reader = FocusReader::new(self.window)?;
-        if signal.read()? == Signal::Missing {
+        if signal.read()?.is_none() {
             report(Report::AddonMissing);
             return Ok(());
         }
@@ -103,7 +103,7 @@ impl Fishing<'_> {
         let mut focus: Option<(bool, Instant)> = None;
         let mut activity = Activity::Idle;
         // A change counts once two reads in a row agree; single reads flicker as the channel ends.
-        let mut previous_read = Signal::Missing;
+        let mut previous_read = None;
         let mut signal_read = Instant::now();
         let mut signal_seen = Instant::now();
         loop {
@@ -123,9 +123,9 @@ impl Fishing<'_> {
                 // A minimized or partly off-screen window can't be read; it counts as the
                 // squares being gone, so the grace period applies.
                 let result = signal.read();
-                let read = *result.as_ref().unwrap_or(&Signal::Missing);
+                let read = *result.as_ref().unwrap_or(&None);
                 match read {
-                    Signal::Missing if signal_seen.elapsed() >= SIGNAL_GRACE => {
+                    None if signal_seen.elapsed() >= SIGNAL_GRACE => {
                         if let Err(error) = result {
                             return Err(format!(
                                 "Pececito can't see the game window. Keep it on screen and not minimized. ({error})"
@@ -134,14 +134,14 @@ impl Fishing<'_> {
                         report(Report::AddonMissing);
                         return Ok(());
                     }
-                    Signal::Missing => {}
-                    seen => {
-                        if seen == previous_read {
-                            activity = match seen {
-                                Signal::Fishing => Activity::Fishing,
-                                Signal::Busy => Activity::Busy,
-                                Signal::NoPole => Activity::NoPole,
-                                Signal::Idle | Signal::Missing => Activity::Idle,
+                    None => {}
+                    Some(frame) => {
+                        if read == previous_read {
+                            activity = match frame.state {
+                                PlayerState::Fishing => Activity::Fishing,
+                                PlayerState::Busy => Activity::Busy,
+                                PlayerState::NoPole => Activity::NoPole,
+                                PlayerState::Idle => Activity::Idle,
                             };
                         }
                         signal_seen = signal_read;

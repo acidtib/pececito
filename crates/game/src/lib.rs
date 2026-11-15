@@ -35,7 +35,7 @@ mod window;
 use std::path::Path;
 
 use addon::{AddonFiles, addon_files};
-pub use addon::{AddonMismatch, Signal, SignalReader, addon_version, install_addon};
+pub use addon::{AddonMismatch, Frame, PlayerState, SignalReader, addon_version, install_addon};
 pub use audio::{CHUNK_FRAMES, GameAudio, SAMPLE_RATE};
 pub use keyboard::{Keyboard, Keystroke};
 pub use watcher::Watcher;
@@ -74,8 +74,8 @@ pub enum AddonState {
     /// The game window can't be read, as when it's minimized or partly off-screen, so the
     /// squares can't be looked for.
     Unreadable(String),
-    /// Installed, but its squares aren't on screen: the game hasn't loaded it since it was
-    /// installed, or it's turned off.
+    /// Installed, but its strip isn't on screen: the game hasn't loaded it since it was
+    /// installed or updated, or it's turned off.
     NotShowing,
     /// Showing, and the player has no fishing pole in hand.
     NoPole,
@@ -104,9 +104,11 @@ pub fn detect() -> Result<Detection, String> {
         AddonFiles::Missing => AddonState::NotInstalled,
         AddonFiles::Different(mismatch) => AddonState::Mismatched(mismatch),
         AddonFiles::Current => match SignalReader::new(&window).and_then(|reader| reader.read()) {
-            Ok(Signal::Missing) => AddonState::NotShowing,
-            Ok(Signal::NoPole) => AddonState::NoPole,
-            Ok(Signal::Idle | Signal::Busy | Signal::Fishing) => AddonState::Showing,
+            Ok(None) => AddonState::NotShowing,
+            Ok(Some(Frame {
+                state: PlayerState::NoPole,
+            })) => AddonState::NoPole,
+            Ok(Some(_)) => AddonState::Showing,
             Err(error) => AddonState::Unreadable(error),
         },
     };

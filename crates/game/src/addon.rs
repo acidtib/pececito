@@ -10,23 +10,25 @@ const TOC: &str = include_str!("../../../addon/Pececito/Pececito.toc");
 const LUA: &str = include_str!("../../../addon/Pececito/Pececito.lua");
 const ICON: &[u8] = include_bytes!("../../../addon/Pececito/Icon.png");
 
-/// The corner the addon draws its 9 by 3 pixel strip in, with room to spare.
-const REGION_WIDTH: u16 = 48;
+/// The corner the addon draws its strip in, with room to spare for larger cells.
+const REGION_WIDTH: u16 = 256;
 const REGION_HEIGHT: u16 = 16;
-/// How far a pixel may stray from the addon's colors and still count.
-const TOLERANCE: u8 = 40;
-const MAGENTA: [u8; 3] = [255, 0, 255];
-const CYAN: [u8; 3] = [0, 255, 255];
-const FISHING: [u8; 3] = [0, 255, 0];
-const IDLE: [u8; 3] = [0, 0, 255];
-const BUSY: [u8; 3] = [255, 255, 0];
-const NO_POLE: [u8; 3] = [255, 0, 0];
+/// The two cells that open the strip. A cell is a square of one color carrying three bits: red
+/// is 4, green is 2 and blue is 1, each on or off.
+const MAGENTA: u32 = 5;
+const CYAN: u32 = 3;
+const VERSION_CELLS: usize = 2;
+const STATE_CELLS: usize = 1;
+const CHECKSUM_CELLS: usize = 2;
 
 /// What the Pececito addon shows in the game.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Signal {
-    /// The addon's squares aren't on screen: it isn't installed or loaded.
-    Missing,
+pub struct Frame {
+    pub state: PlayerState,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PlayerState {
     Idle,
     /// Idle, with no fishing pole in hand.
     NoPole,
@@ -150,7 +152,9 @@ impl SignalReader {
         })
     }
 
-    pub fn read(&self) -> Result<Signal, String> {
+    /// What the addon shows; `None` when its strip isn't on screen, or is drawn by another
+    /// version of the addon, as it is until the game reloads after an update.
+    pub fn read(&self) -> Result<Option<Frame>, String> {
         let failed = |error: &dyn std::fmt::Display| format!("reading the game window: {error}");
         let geometry = self
             .connection
@@ -181,77 +185,210 @@ impl SignalReader {
                 image.data.len()
             ));
         }
-        Ok(classify(&image.data))
+        Ok(decode(&image.data, usize::from(width)))
     }
 }
 
-/// Finds the addon's colors among 32-bit pixels, stored blue, green, red, unused.
-fn classify(data: &[u8]) -> Signal {
-    let (pixels, _) = data.as_chunks::<4>();
-    let count = |color: [u8; 3]| {
-        pixels
+/// Reads the strip's cells from the top-left corner of rows of 32-bit pixels, stored blue,
+/// green, red, unused.
+struct Cells<'a> {
+    pixels: &'a [[u8; 4]],
+    /// Pixels in a row.
+    width: usize,
+    /// A cell's side in pixels.
+    side: usize,
+    next: usize,
+    /// The checksum so far: each cell after the markers, times its place among them.
+    sum: u32,
+}
+
+impl<'a> Cells<'a> {
+    /// `None` unless the corner opens with the magenta and cyan cells.
+    fn find(data: &'a [u8], width: usize) -> Option<Self> {
+        let (pixels, _) = data.as_chunks::<4>();
+        let side = pixels
             .iter()
-            .filter(|[blue, green, red, _]| {
-                [*red, *green, *blue]
-                    .iter()
-                    .zip(color)
-                    .all(|(channel, target)| channel.abs_diff(target) <= TOLERANCE)
-            })
-            .count()
-    };
-    if count(MAGENTA) == 0 || count(CYAN) == 0 {
-        return Signal::Missing;
+            .take(width)
+            .take_while(|pixel| bits(pixel) == MAGENTA)
+            .count();
+        let mut cells = Cells {
+            pixels,
+            width,
+            side,
+            next: 1,
+            sum: 0,
+        };
+        (side > 0 && cells.cell()? == CYAN).then_some(cells)
     }
-    [
-        (Signal::Fishing, count(FISHING)),
-        (Signal::Busy, count(BUSY)),
-        (Signal::NoPole, count(NO_POLE)),
-        (Signal::Idle, count(IDLE)),
-    ]
-    .into_iter()
-    .filter(|(_, pixels)| *pixels > 0)
-    .max_by_key(|(_, pixels)| *pixels)
-    .map_or(Signal::Missing, |(signal, _)| signal)
+
+    /// The next cell, sampled at its middle, where neighbors and scaling blur it least.
+    fn cell(&mut self) -> Option<u32> {
+        let x = self.next * self.side + self.side / 2;
+        let y = self.side / 2;
+        self.next += 1;
+        (x < self.width)
+            .then(|| self.pixels.get(y * self.width + x))
+            .flatten()
+            .map(bits)
+    }
+
+    /// The number in the next `count` cells, most significant first.
+    fn number(&mut self, count: usize) -> Option<u32> {
+        let mut number = 0;
+        for _ in 0..count {
+            let cell = self.cell()?;
+            let place = self.next as u32 - 2;
+            self.sum += place * cell;
+            number = number * 8 + cell;
+        }
+        Some(number)
+    }
+
+    /// Whether the cells that follow hold the checksum of the ones read so far.
+    fn checksum_matches(&mut self) -> bool {
+        let expected = self.sum % 8u32.pow(CHECKSUM_CELLS as u32);
+        self.number(CHECKSUM_CELLS) == Some(expected)
+    }
+}
+
+/// A pixel as a cell's three bits; a channel is on when it's over half.
+fn bits([blue, green, red, _]: &[u8; 4]) -> u32 {
+    u32::from(*red >= 128) * 4 + u32::from(*green >= 128) * 2 + u32::from(*blue >= 128)
+}
+
+fn decode(data: &[u8], width: usize) -> Option<Frame> {
+    let mut cells = Cells::find(data, width)?;
+    // Later cells mean what this version says they do, so another version's aren't read.
+    if Some(cells.number(VERSION_CELLS)?) != addon_version() {
+        return None;
+    }
+    let state = match cells.number(STATE_CELLS)? {
+        0 => PlayerState::Idle,
+        1 => PlayerState::NoPole,
+        2 => PlayerState::Busy,
+        3 => PlayerState::Fishing,
+        _ => return None,
+    };
+    cells.checksum_matches().then_some(Frame { state })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// A row of pixels in the window's byte order.
-    fn pixels(colors: &[[u8; 3]]) -> Vec<u8> {
-        colors
-            .iter()
-            .flat_map(|[red, green, blue]| [*blue, *green, *red, 0])
+    const SIDE: usize = 3;
+
+    fn color(cell: u32) -> [u8; 3] {
+        [4, 2, 1].map(|bit| if cell & bit != 0 { 255 } else { 0 })
+    }
+
+    /// The cells of a number, most significant first.
+    fn digits(number: u32, count: u32) -> Vec<u32> {
+        (0..count)
+            .rev()
+            .map(|place| number / 8u32.pow(place) % 8)
             .collect()
     }
 
+    /// The strip's cells for a state, as this build's addon draws them.
+    fn strip(state: u32) -> Vec<u32> {
+        let mut payload = digits(addon_version().unwrap_or(0), 2);
+        payload.push(state);
+        let sum: u32 = payload
+            .iter()
+            .zip(1..)
+            .map(|(cell, place)| cell * place)
+            .sum();
+        payload.extend(digits(sum % 64, 2));
+        [vec![MAGENTA, CYAN], payload].concat()
+    }
+
+    /// A corner of the game window with `cells` drawn `side` pixels large over grass, and its
+    /// width in pixels.
+    fn corner(cells: &[u32], side: usize, drift: u8) -> (Vec<u8>, usize) {
+        let width = cells.len() * side + 5;
+        let mut data = Vec::new();
+        for y in 0..side + 2 {
+            for x in 0..width {
+                let [red, green, blue] = match cells.get(x / side) {
+                    Some(cell) if y < side => color(*cell)
+                        .map(|channel| if channel == 0 { drift } else { channel - drift }),
+                    _ => [40, 90, 30],
+                };
+                data.extend([blue, green, red, 0]);
+            }
+        }
+        (data, width)
+    }
+
+    fn read(cells: &[u32], side: usize, drift: u8) -> Option<Frame> {
+        let (data, width) = corner(cells, side, drift);
+        decode(&data, width)
+    }
+
     #[test]
-    fn reads_the_middle_square() {
-        let grass = [40, 90, 30];
-        assert_eq!(
-            classify(&pixels(&[grass, MAGENTA, FISHING, CYAN])),
-            Signal::Fishing
-        );
-        assert_eq!(
-            classify(&pixels(&[MAGENTA, IDLE, CYAN, grass])),
-            Signal::Idle
-        );
-        assert_eq!(classify(&pixels(&[MAGENTA, BUSY, CYAN])), Signal::Busy);
-        assert_eq!(classify(&pixels(&[MAGENTA, NO_POLE, CYAN])), Signal::NoPole);
-        assert_eq!(
-            classify(&pixels(&[[250, 10, 245], [10, 240, 8], [5, 250, 250]])),
-            Signal::Fishing,
-            "close colors count"
-        );
+    fn reads_the_player_state() {
+        let states = [
+            PlayerState::Idle,
+            PlayerState::NoPole,
+            PlayerState::Busy,
+            PlayerState::Fishing,
+        ];
+        for (number, state) in (0..).zip(states) {
+            assert_eq!(read(&strip(number), SIDE, 0), Some(Frame { state }));
+        }
+        assert_eq!(read(&strip(4), SIDE, 0), None, "no such state");
+    }
+
+    #[test]
+    fn reads_drifted_colors_and_other_cell_sizes() {
+        let frame = Some(Frame {
+            state: PlayerState::Fishing,
+        });
+        assert_eq!(read(&strip(3), SIDE, 100), frame);
+        assert_eq!(read(&strip(3), 1, 0), frame);
+        assert_eq!(read(&strip(3), 6, 40), frame);
     }
 
     #[test]
     fn needs_both_markers() {
-        assert_eq!(classify(&pixels(&[FISHING, CYAN])), Signal::Missing);
-        assert_eq!(classify(&pixels(&[MAGENTA, FISHING])), Signal::Missing);
-        assert_eq!(classify(&pixels(&[MAGENTA, CYAN])), Signal::Missing);
-        assert_eq!(classify(&[]), Signal::Missing);
+        let mut cells = strip(3);
+        cells[1] = MAGENTA;
+        assert_eq!(read(&cells, SIDE, 0), None);
+        let mut cells = strip(3);
+        cells[0] = CYAN;
+        assert_eq!(read(&cells, SIDE, 0), None);
+        assert_eq!(decode(&[], 0), None);
+    }
+
+    #[test]
+    fn rejects_a_bad_checksum_and_a_cut_off_strip() {
+        let mut cells = strip(3);
+        cells[4] = 2;
+        assert_eq!(read(&cells, SIDE, 0), None, "a cell changed");
+        let cells = strip(3);
+        assert_eq!(read(&cells[..cells.len() - 1], SIDE, 0), None);
+    }
+
+    #[test]
+    fn ignores_another_version_of_the_addon() {
+        let mut cells = strip(3);
+        cells[3] = (cells[3] + 1) % 8;
+        assert_eq!(read(&cells, SIDE, 0), None);
+        let green = 2;
+        assert_eq!(
+            read(&[MAGENTA, green, CYAN], SIDE, 0),
+            None,
+            "the first release's three squares"
+        );
+    }
+
+    #[test]
+    fn the_addon_draws_the_version_in_its_toc() {
+        let Some(version) = addon_version() else {
+            panic!("Pececito.toc has no version")
+        };
+        assert!(LUA.contains(&format!("local VERSION = {version}\n")));
     }
 
     #[test]
@@ -312,7 +449,7 @@ mod tests {
             });
         assert_eq!(
             (addon_version(), fingerprint),
-            (Some(1), 1_145_592_705_240_569_727)
+            (Some(2), 6_918_506_833_127_053_398)
         );
     }
 }
