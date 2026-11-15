@@ -13,6 +13,7 @@ use crate::{GameProcess, GameWindow};
 const TOC: &str = include_str!("../../../addon/Pececito/Pececito.toc");
 const LUA: &str = include_str!("../../../addon/Pececito/Pececito.lua");
 const ICON: &[u8] = include_bytes!("../../../addon/Pececito/Icon.png");
+const FISHING_LOOT: &str = include_str!("fishing_loot.tsv");
 
 /// The corner the addon draws its strip in, with room to spare for larger cells.
 const REGION_WIDTH: u16 = 256;
@@ -159,9 +160,15 @@ fn addon_files_in(game: &Path) -> AddonFiles {
 /// The names of items the addon has seen looted, by item id. The game writes them when it
 /// reloads or the player logs out, so an item looted since then has no name yet.
 pub fn item_names(process: &GameProcess) -> HashMap<u32, String> {
-    let mut names = HashMap::new();
-    let accounts = fs::read_link(format!("/proc/{}/cwd", process.pid))
-        .and_then(|game| fs::read_dir(game.join("WTF").join("Account")));
+    match fs::read_link(format!("/proc/{}/cwd", process.pid)) {
+        Ok(game) => item_names_in(&game),
+        Err(_) => known_fishing_loot().collect(),
+    }
+}
+
+fn item_names_in(game: &Path) -> HashMap<u32, String> {
+    let mut names: HashMap<u32, String> = known_fishing_loot().collect();
+    let accounts = fs::read_dir(game.join("WTF").join("Account"));
     for account in accounts.into_iter().flatten().flatten() {
         let saved = account.path().join("SavedVariables").join("Pececito.lua");
         if let Ok(saved) = fs::read_to_string(saved) {
@@ -169,6 +176,14 @@ pub fn item_names(process: &GameProcess) -> HashMap<u32, String> {
         }
     }
     names
+}
+
+/// The items fishing can give, so a catch has a name before the game first saves it.
+fn known_fishing_loot() -> impl Iterator<Item = (u32, String)> {
+    FISHING_LOOT.lines().filter_map(|line| {
+        let (item, name) = line.split_once('\t')?;
+        Some((item.parse().ok()?, name.to_string()))
+    })
 }
 
 /// The `[id] = "name",` lines of the saved `PececitoItems` table.
@@ -496,6 +511,40 @@ mod tests {
             names.get(&6522).map(String::as_str),
             Some("Deviate \"Fish\"")
         );
+    }
+
+    #[test]
+    fn names_fishing_loot_before_the_game_saves_it() -> Result<(), std::io::Error> {
+        let known: Vec<(u32, String)> = known_fishing_loot().collect();
+        let lines = FISHING_LOOT.lines().filter(|line| !line.starts_with('#'));
+        assert_eq!(known.len(), lines.count(), "every item line parses");
+        assert!(known.iter().all(|(_, name)| !name.is_empty()));
+
+        let game = std::env::temp_dir().join(format!("pececito-names-{}", std::process::id()));
+        let saved = game
+            .join("WTF")
+            .join("Account")
+            .join("1#1")
+            .join("SavedVariables");
+        fs::create_dir_all(&saved)?;
+        fs::write(
+            saved.join("Pececito.lua"),
+            "PececitoItems = {\n[6289] = \"Longjaw\",\n[99999] = \"Not in the table\",\n}\n",
+        )?;
+        let names = item_names_in(&game);
+        let without_saves = item_names_in(&game.join("missing"));
+        fs::remove_dir_all(&game)?;
+        assert_eq!(
+            without_saves.get(&6291).map(String::as_str),
+            Some("Raw Brilliant Smallfish")
+        );
+        assert_eq!(names.get(&6289).map(String::as_str), Some("Longjaw"));
+        assert_eq!(
+            names.get(&99999).map(String::as_str),
+            Some("Not in the table")
+        );
+        assert_eq!(names.len(), known.len() + 1);
+        Ok(())
     }
 
     #[test]
