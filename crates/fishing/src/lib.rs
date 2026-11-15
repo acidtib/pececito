@@ -247,6 +247,18 @@ pub struct Cast {
     pub loot: Vec<Loot>,
 }
 
+impl Cast {
+    /// Whether this is a hook whose loot can still arrive.
+    pub fn awaits_loot(&self, now: f64) -> bool {
+        match self.outcome {
+            Outcome::Hooked { after } => {
+                self.loot.is_empty() && now - (self.at + after) <= LOOT_WAIT
+            }
+            _ => false,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Loot {
     /// The game's id for the item.
@@ -888,6 +900,31 @@ mod tests {
             !run.looted(now + LOOT_WAIT, fish),
             "too late to be the hook's"
         );
+    }
+
+    #[test]
+    fn a_hook_awaits_its_loot_until_it_lands_or_the_wait_runs_out() {
+        let fish = Loot {
+            item: 6358,
+            count: 1,
+        };
+        let hook = |loot: Vec<Loot>| Cast {
+            outcome: Outcome::Hooked { after: 5.0 },
+            at: 0.0,
+            loot,
+        };
+        assert!(hook(Vec::new()).awaits_loot(5.5));
+        assert!(!hook(vec![fish]).awaits_loot(5.5), "the loot landed");
+        assert!(
+            !hook(Vec::new()).awaits_loot(5.0 + LOOT_WAIT + 0.1),
+            "no loot is coming"
+        );
+        let no_bite = Cast {
+            outcome: Outcome::NoBite,
+            at: 0.0,
+            loot: Vec::new(),
+        };
+        assert!(!no_bite.awaits_loot(1.0));
     }
 
     #[test]

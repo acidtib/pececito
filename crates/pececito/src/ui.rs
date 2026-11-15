@@ -13,7 +13,7 @@ use rune_kit::{
 
 use crate::update::{self, Update};
 use crate::{Fishing, Game, Screen, Session, State, StopReason};
-use fishing::{CAST_LENGTH, HookDelay, Loot, Outcome, PauseReason, Phase};
+use fishing::{CAST_LENGTH, Cast, HookDelay, Loot, Outcome, PauseReason, Phase};
 use game::{AddonMismatch, AddonState, Detection};
 
 /// Points square; the logo is rasterized at this size.
@@ -581,10 +581,19 @@ fn stats(state: &State, kit: &Kit) -> El {
 
 fn casts(state: &State, kit: &Kit) -> El {
     let c = &kit.c;
-    let history = match &state.session {
-        Session::Fishing(fishing) => fishing.run.history.as_slice(),
-        Session::Stopped(finished) => finished.run.history.as_slice(),
-        Session::Idle => &[],
+    // A hook's row waits for its loot, so it shows the item from the start.
+    let history: Vec<&Cast> = match &state.session {
+        Session::Fishing(fishing) => {
+            let now = state.clock - fishing.started;
+            fishing
+                .run
+                .history
+                .iter()
+                .filter(|cast| !cast.awaits_loot(now))
+                .collect()
+        }
+        Session::Stopped(finished) => finished.run.history.iter().collect(),
+        Session::Idle => Vec::new(),
     };
     let list = panel(kit)
         .key("casts")
