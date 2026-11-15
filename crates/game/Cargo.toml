@@ -6,9 +6,11 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
-evdev.workspace = true
 serde_json.workspace = true
 x11rb.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+evdev.workspace = true
 
 [lints]
 workspace = true

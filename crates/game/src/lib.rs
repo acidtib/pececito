@@ -2,7 +2,32 @@
 
 mod addon;
 mod audio;
+#[cfg(target_os = "linux")]
 mod keyboard;
+#[cfg(not(target_os = "linux"))]
+mod keyboard {
+    /// Key presses go through `/dev/uinput`, which only Linux has.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct Keystroke;
+
+    impl Keystroke {
+        pub fn parse(_text: &str) -> Result<Self, String> {
+            Ok(Keystroke)
+        }
+    }
+
+    pub struct Keyboard;
+
+    impl Keyboard {
+        pub fn new() -> Result<Self, String> {
+            Err("Pressing keys isn't supported on this system yet".into())
+        }
+
+        pub fn press(&mut self, _keystroke: &Keystroke) -> Result<(), String> {
+            Err("Pressing keys isn't supported on this system yet".into())
+        }
+    }
+}
 mod process;
 mod watcher;
 mod window;
