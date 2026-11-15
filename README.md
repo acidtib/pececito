@@ -35,7 +35,11 @@ cargo run
 
 Settings are saved to `~/.config/pececito/prefs.json`.
 
-## Install
+## Download
+
+Each release on GitHub has a Linux build (`.tar.gz`) and a Windows build (`.zip`). The Windows build opens, but it can't find the game or press keys yet.
+
+## Install from source
 
 ```sh
 script/install-linux
