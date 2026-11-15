@@ -11,6 +11,7 @@ use rune_kit::{
     SegmentedControl, ShortcutRecorder, popover, scrim,
 };
 
+use crate::update::{self, Update};
 use crate::{Fishing, Game, Screen, Session, State, StopReason};
 use fishing::{CAST_LENGTH, HookDelay, Loot, Outcome, PauseReason, Phase};
 use game::{AddonMismatch, AddonState, Detection};
@@ -783,6 +784,11 @@ fn settings_screen(state: &State, kit: &Kit) -> El {
             "Config file",
             vec![config_file_setting(state, kit)],
         ))
+        .child(settings_section(
+            kit,
+            "Updates",
+            vec![update_setting(state, kit)],
+        ))
         .child(about(state, kit))
 }
 
@@ -812,6 +818,63 @@ fn about(state: &State, kit: &Kit) -> El {
                 .font(kit.ty.small)
                 .color(c.text_faint),
         )
+}
+
+fn update_setting(state: &State, kit: &Kit) -> El {
+    let c = &kit.c;
+    let (description, color, label) = match &state.update {
+        Update::Unchecked => (
+            "See if a newer release is out.".to_string(),
+            c.text_muted,
+            "Check for updates",
+        ),
+        Update::Checking(_) => ("Checking.".to_string(), c.text_muted, "Checking"),
+        Update::UpToDate => (
+            "You have the latest release.".to_string(),
+            c.text_muted,
+            "Check for updates",
+        ),
+        Update::Available(version) if update::installs_itself() => {
+            (format!("Version {version} is out."), c.text_base, "Update")
+        }
+        Update::Available(version) | Update::Opening(version, _) => (
+            format!(
+                "Version {version} is out. This copy can't update itself, so download it from the release page."
+            ),
+            c.text_base,
+            "Download",
+        ),
+        Update::Installing(version, _) => (
+            format!("Installing version {version}."),
+            c.text_muted,
+            "Updating",
+        ),
+        Update::Installed(version) => (
+            format!("Version {version} is installed. Close and reopen Pececito to use it."),
+            c.text_base,
+            "Updated",
+        ),
+        Update::Failed(error) => (error.clone(), c.danger.fg, "Check for updates"),
+    };
+    let ready = !state.update.is_busy() && !matches!(state.update, Update::Installed(_));
+    let button = Button::new(label)
+        .variant(ButtonVariant::Neutral)
+        .disabled(!ready)
+        .on_press(State::advance_update)
+        .build(kit)
+        .pointer(ready)
+        .key("update");
+    row()
+        .w_full()
+        .gap(12.0)
+        .center_y()
+        .child(setting_text(
+            kit,
+            concat!("Pececito ", env!("CARGO_PKG_VERSION")),
+            description,
+            color,
+        ))
+        .child(button)
 }
 
 fn config_file_setting(state: &State, kit: &Kit) -> El {

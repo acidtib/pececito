@@ -4,10 +4,10 @@
 mod angler;
 mod settings;
 mod ui;
+mod update;
 
 use std::collections::HashMap;
 use std::path::Path;
-use std::process::Command;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
 use std::time::Duration;
@@ -23,6 +23,7 @@ use angler::{Angler, Report};
 use fishing::{HookDelay, Run};
 use game::{AddonState, Detection, GameWindow, Keystroke, Watcher};
 use settings::Settings;
+use update::Update;
 
 const APP_ID: &str = "pececito";
 const LOGO_SVG: &[u8] = include_bytes!("../../../assets/icon/pececito.svg");
@@ -173,6 +174,7 @@ struct State {
     item_names: HashMap<u32, String>,
     install: Job,
     open_config: Job,
+    update: Update,
     /// Set by `setup`; tests have none, so starting a session there presses no keys.
     waker: Option<Waker>,
     /// Pececito's own window, to save where it sits when it closes.
@@ -205,6 +207,7 @@ impl State {
             item_names: HashMap::new(),
             install: Job::Idle,
             open_config: Job::Idle,
+            update: Update::Unchecked,
             waker: None,
             app_window: None,
             logo: None,
@@ -412,6 +415,16 @@ impl State {
             .start(self.waker.clone(), move || open_file(&path));
     }
 
+    /// Checks for a newer release, or gets the one a check found.
+    fn advance_update(&mut self) {
+        let waker = self.waker.clone();
+        self.update.advance(move || {
+            if let Some(waker) = waker {
+                waker();
+            }
+        });
+    }
+
     /// Writes the settings still at their defaults, so the file lists every one, and drops the
     /// older "Stop after" key once its value lives under "Fish for".
     fn write_missing_settings(&mut self) {
@@ -464,7 +477,8 @@ impl State {
             *addon = AddonState::NotShowing;
         }
         let opened = self.open_config.finish();
-        installed.is_some() || opened.is_some()
+        let updated = self.update.finish();
+        installed.is_some() || opened.is_some() || updated
     }
 
     fn is_installing(&self) -> bool {
@@ -514,22 +528,7 @@ fn open_file(path: &Path) -> Result<(), String> {
         }
         Err(error) => return Err(format!("Can't read {}: {error}", path.display())),
     }
-    // `start` takes its first quoted argument as a window title, so it gets an empty one.
-    let (program, arguments): (&str, &[&str]) = if cfg!(target_os = "windows") {
-        ("cmd", &["/C", "start", ""])
-    } else {
-        ("xdg-open", &[])
-    };
-    let status = Command::new(program)
-        .args(arguments)
-        .arg(path)
-        .status()
-        .map_err(|error| format!("Can't run {program}: {error}"))?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(format!("{program} couldn't open it ({status})."))
-    }
+    update::open(path.as_os_str())
 }
 
 /// Space until the user records a key; a cleared key stays cleared.
