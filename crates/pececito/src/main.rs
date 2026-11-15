@@ -1,24 +1,39 @@
 mod angler;
+mod settings;
 mod ui;
 
+use std::path::Path;
+use std::process::Command;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
 use std::time::Duration;
 
-use rune::prefs::Prefs;
-use rune::{AppSpec, Key, KeyEvent, Mods, PhysicalKeyCode, Shortcut, Tx, Waker};
+use rune::prefs::{Prefs, PrefsError};
+use rune::{
+    AppSpec, Display, Key, KeyEvent, Mods, PhysicalKeyCode, Shortcut, Tx, Waker, WindowHandle,
+    WindowOptions, WindowSpec,
+};
 use rune_kit::ShortcutRecorderState;
 
 use angler::{Angler, Report};
 use fishing::{HookDelay, Run};
 use game::{AddonState, Detection, GameWindow, Keystroke, Watcher};
+use settings::Settings;
 
 const APP_ID: &str = "pececito";
+const WINDOW_SIZE: (f32, f32) = (400.0, 600.0);
 const FISHING_KEY_PREF: &str = "fishing_key";
 const HOOK_DELAY_PREF: &str = "hook_delay";
+const FISH_FOR_PREF: &str = "fish_for_minutes";
+/// The window frame's top-left in physical desktop pixels.
+const WINDOW_POSITION_PREF: &str = "window_position";
+/// Where "Fish for" was saved when it was called "Stop after".
 const STOP_AFTER_PREF: &str = "stop_after_minutes";
+const DEFAULT_FISH_FOR_MINUTES: Option<u64> = Some(10);
 /// Redraws a running session often enough for its timer and bite bar.
 const SESSION_REFRESH: Duration = Duration::from_millis(100);
+/// How long closing the window waits for settings to reach the file.
+const SAVE_ON_CLOSE_LIMIT: Duration = Duration::from_secs(2);
 
 #[derive(Clone, Debug, Default, PartialEq)]
 enum Game {
@@ -35,6 +50,16 @@ enum Screen {
     Settings,
 }
 
+/// The Fish for popover next to Start fishing.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum FishForPicker {
+    #[default]
+    Closed,
+    Open,
+    /// A drag on the slider shows this length; the session limit changes only on release.
+    Dragging(usize),
+}
+
 #[derive(Clone, Debug, PartialEq)]
 struct Fishing {
     /// App clock time the session started; the run's times count from here.
@@ -47,18 +72,64 @@ struct Fishing {
 enum StopReason {
     Stopped,
     GameClosed,
-    /// The session ran as long as the "Stop after" setting allowed, named by its label.
+    /// The session ran as long as the "Fish for" setting allowed, named by its label.
     TimeUp(&'static str),
     AddonMissing,
     Failed(String),
 }
 
-/// Installing the addon writes into the game's folder, so it runs on its own thread.
-enum Install {
+/// Work that writes files or runs other programs, on its own thread.
+enum Job {
     Idle,
     Running(Receiver<Result<(), String>>),
-    /// The last install failed, until the next one.
+    /// The last run failed, until the next one.
     Failed(String),
+}
+
+impl Job {
+    fn start(
+        &mut self,
+        waker: Option<Waker>,
+        work: impl FnOnce() -> Result<(), String> + Send + 'static,
+    ) {
+        let (sender, result) = mpsc::channel();
+        thread::spawn(move || {
+            if sender.send(work()).is_ok()
+                && let Some(waker) = waker
+            {
+                waker();
+            }
+        });
+        *self = Job::Running(result);
+    }
+
+    /// The result of a run that has just finished.
+    fn finish(&mut self) -> Option<Result<(), String>> {
+        let Job::Running(result) = self else {
+            return None;
+        };
+        let finished = match result.try_recv() {
+            Ok(finished) => finished,
+            Err(TryRecvError::Empty) => return None,
+            Err(TryRecvError::Disconnected) => Err("It stopped unexpectedly.".into()),
+        };
+        *self = match &finished {
+            Ok(()) => Job::Idle,
+            Err(error) => Job::Failed(error.clone()),
+        };
+        Some(finished)
+    }
+
+    fn is_running(&self) -> bool {
+        matches!(self, Job::Running(_))
+    }
+
+    fn error(&self) -> Option<&str> {
+        match self {
+            Job::Failed(error) => Some(error),
+            Job::Idle | Job::Running(_) => None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -84,16 +155,21 @@ struct State {
     /// The key bound to fishing in the game's own keybindings.
     fishing_key: ShortcutRecorderState,
     hook_delay: HookDelay,
-    /// Index into `ui::STOP_AFTER`.
-    stop_after: usize,
+    /// Index into `ui::FISH_FOR`.
+    fish_for: usize,
+    fish_for_picker: FishForPicker,
     clock: f64,
-    prefs: Prefs,
+    settings: Settings,
+    /// The last settings write that failed, until one succeeds.
     save_error: Option<String>,
     watcher: Option<Watcher>,
     angler: Option<Angler>,
-    install: Install,
+    install: Job,
+    open_config: Job,
     /// Set by `setup`; tests have none, so starting a session there presses no keys.
     waker: Option<Waker>,
+    /// Pececito's own window, to save where it sits when it closes.
+    app_window: Option<WindowHandle>,
 }
 
 impl State {
@@ -103,21 +179,24 @@ impl State {
             .get::<String>(HOOK_DELAY_PREF)
             .and_then(|name| HookDelay::from_name(&name))
             .unwrap_or_default();
-        let stop_after = load_stop_after(&prefs);
+        let fish_for = load_fish_for(&prefs);
         State {
             game: Game::default(),
             session: Session::default(),
             screen: Screen::default(),
             fishing_key: ShortcutRecorderState::new(fishing_key),
             hook_delay,
-            stop_after,
+            fish_for,
+            fish_for_picker: FishForPicker::Closed,
             clock: 0.0,
-            prefs,
+            settings: Settings::start(prefs),
             save_error: None,
             watcher: None,
             angler: None,
-            install: Install::Idle,
+            install: Job::Idle,
+            open_config: Job::Idle,
             waker: None,
+            app_window: None,
         }
     }
 
@@ -242,9 +321,9 @@ impl State {
         let Session::Fishing(fishing) = &self.session else {
             return;
         };
-        let limit = ui::STOP_AFTER
-            .get(self.stop_after)
-            .and_then(|(label, minutes)| minutes.map(|minutes| (*label, minutes)));
+        let limit = ui::FISH_FOR
+            .get(self.fish_for)
+            .and_then(|length| length.minutes.map(|minutes| (length.label, minutes)));
         if let Some((label, minutes)) = limit
             && self.clock - fishing.started >= minutes as f64 * 60.0
         {
@@ -253,7 +332,48 @@ impl State {
     }
 
     fn open_settings(&mut self) {
+        self.fish_for_picker = FishForPicker::Closed;
         self.screen = Screen::Settings;
+    }
+
+    fn toggle_fish_for(&mut self) {
+        self.fish_for_picker = match self.fish_for_picker {
+            FishForPicker::Closed => FishForPicker::Open,
+            FishForPicker::Open | FishForPicker::Dragging(_) => FishForPicker::Closed,
+        };
+    }
+
+    fn close_fish_for(&mut self) {
+        self.fish_for_picker = FishForPicker::Closed;
+    }
+
+    fn is_fish_for_open(&self) -> bool {
+        self.fish_for_picker != FishForPicker::Closed
+    }
+
+    /// The length the slider shows: a drag's, else the one in use.
+    fn shown_fish_for(&self) -> usize {
+        match self.fish_for_picker {
+            FishForPicker::Dragging(index) => index,
+            FishForPicker::Closed | FishForPicker::Open => self.fish_for,
+        }
+    }
+
+    fn drag_fish_for(&mut self, index: usize) {
+        if self.is_fish_for_open() && index < ui::FISH_FOR.len() {
+            self.fish_for_picker = FishForPicker::Dragging(index);
+        }
+    }
+
+    /// Ends a drag: a release keeps the length shown, a cancelled drag drops it.
+    fn end_fish_for_drag(&mut self, keep: bool) {
+        let FishForPicker::Dragging(index) = self.fish_for_picker else {
+            return;
+        };
+        self.fish_for_picker = FishForPicker::Open;
+        if keep {
+            self.pick_fish_for(index);
+        }
     }
 
     fn install_addon(&mut self) {
@@ -264,53 +384,83 @@ impl State {
             return;
         };
         let process = window.process.clone();
-        let waker = self.waker.clone();
-        let (sender, result) = mpsc::channel();
-        thread::spawn(move || {
-            let installed = game::install_addon(&process).map(|_| ());
-            if sender.send(installed).is_ok()
-                && let Some(waker) = waker
-            {
-                waker();
-            }
+        self.install.start(self.waker.clone(), move || {
+            game::install_addon(&process).map(|_| ())
         });
-        self.install = Install::Running(result);
     }
 
-    /// Takes in a finished install; returns whether one finished.
-    fn finish_install(&mut self) -> bool {
-        let Install::Running(result) = &self.install else {
-            return false;
+    fn open_config_file(&mut self) {
+        if self.open_config.is_running() {
+            return;
+        }
+        let Some(path) = self.settings.path().map(Path::to_path_buf) else {
+            return;
         };
-        let installed = match result.try_recv() {
-            Ok(installed) => installed,
-            Err(TryRecvError::Empty) => return false,
-            Err(TryRecvError::Disconnected) => Err("the install stopped unexpectedly".into()),
-        };
-        self.install = match installed {
-            Ok(()) => {
-                // The next scan says the same once it runs; the game shows it after /reload.
-                if let Game::Detected(Detection::Found(_, addon)) = &mut self.game
-                    && *addon == AddonState::NotInstalled
-                {
-                    *addon = AddonState::NotShowing;
-                }
-                Install::Idle
+        self.open_config
+            .start(self.waker.clone(), move || open_file(&path));
+    }
+
+    /// Writes the settings still at their defaults, so the file lists every one, and drops the
+    /// older "Stop after" key once its value lives under "Fish for".
+    fn write_missing_settings(&mut self) {
+        let fishing_key = self.fishing_key.shortcut().map(Shortcut::to_string);
+        let hook_delay = self.hook_delay.name();
+        let minutes = ui::FISH_FOR
+            .get(self.fish_for)
+            .and_then(|length| length.minutes);
+        self.save(move |prefs| {
+            if !prefs.contains(FISHING_KEY_PREF) {
+                prefs.set(FISHING_KEY_PREF, &fishing_key)?;
             }
-            Err(error) => Install::Failed(error),
-        };
-        true
+            if !prefs.contains(HOOK_DELAY_PREF) {
+                prefs.set(HOOK_DELAY_PREF, hook_delay)?;
+            }
+            if !prefs.contains(FISH_FOR_PREF) {
+                prefs.set(FISH_FOR_PREF, &minutes)?;
+            }
+            prefs.remove(STOP_AFTER_PREF)
+        });
+    }
+
+    /// Queues a write for the settings thread; `poll` takes in how it went.
+    fn save(&mut self, write: impl FnOnce(&mut Prefs) -> Result<(), PrefsError> + Send + 'static) {
+        let queued = self
+            .settings
+            .write(move |prefs| write(prefs).map_err(|error| error.to_string()));
+        if let Err(error) = queued {
+            self.save_error = Some(error);
+        }
+    }
+
+    /// Takes in finished settings writes; returns whether any finished.
+    fn finish_saves(&mut self) -> bool {
+        let results = self.settings.drain();
+        for result in &results {
+            self.save_error = result.as_ref().err().cloned();
+        }
+        !results.is_empty()
+    }
+
+    /// Takes in finished background work; returns whether any finished.
+    fn finish_jobs(&mut self) -> bool {
+        let installed = self.install.finish();
+        // The next scan says the same once it runs; the game shows it after /reload.
+        if let Some(Ok(())) = installed
+            && let Game::Detected(Detection::Found(_, addon)) = &mut self.game
+            && *addon == AddonState::NotInstalled
+        {
+            *addon = AddonState::NotShowing;
+        }
+        let opened = self.open_config.finish();
+        installed.is_some() || opened.is_some()
     }
 
     fn is_installing(&self) -> bool {
-        matches!(self.install, Install::Running(_))
+        self.install.is_running()
     }
 
     fn install_error(&self) -> Option<&str> {
-        match &self.install {
-            Install::Failed(error) => Some(error),
-            Install::Idle | Install::Running(_) => None,
-        }
+        self.install.error()
     }
 
     fn close_settings(&mut self) {
@@ -320,28 +470,46 @@ impl State {
 
     fn save_fishing_key(&mut self, shortcut: Option<&Shortcut>) {
         let value = shortcut.map(Shortcut::to_string);
-        let result = self.prefs.set(FISHING_KEY_PREF, &value);
-        self.saved(result);
+        self.save(move |prefs| prefs.set(FISHING_KEY_PREF, &value));
     }
 
     fn pick_hook_delay(&mut self, index: usize) {
         if let Some(hook_delay) = HookDelay::ALL.get(index) {
             self.hook_delay = *hook_delay;
-            let result = self.prefs.set(HOOK_DELAY_PREF, hook_delay.name());
-            self.saved(result);
+            let name = hook_delay.name();
+            self.save(move |prefs| prefs.set(HOOK_DELAY_PREF, name));
         }
     }
 
-    fn pick_stop_after(&mut self, index: usize) {
-        if let Some((_, minutes)) = ui::STOP_AFTER.get(index) {
-            self.stop_after = index;
-            let result = self.prefs.set(STOP_AFTER_PREF, minutes);
-            self.saved(result);
+    fn pick_fish_for(&mut self, index: usize) {
+        if index == self.fish_for {
+            return;
+        }
+        if let Some(length) = ui::FISH_FOR.get(index) {
+            self.fish_for = index;
+            let minutes = length.minutes;
+            self.save(move |prefs| prefs.set(FISH_FOR_PREF, &minutes));
         }
     }
+}
 
-    fn saved(&mut self, result: Result<(), impl std::fmt::Display>) {
-        self.save_error = result.err().map(|error| error.to_string());
+/// Opens `path` in the desktop's default app for it.
+fn open_file(path: &Path) -> Result<(), String> {
+    match path.try_exists() {
+        Ok(true) => {}
+        Ok(false) => {
+            return Err("The settings file is missing. Change a setting to write it again.".into());
+        }
+        Err(error) => return Err(format!("Can't read {}: {error}", path.display())),
+    }
+    let status = Command::new("xdg-open")
+        .arg(path)
+        .status()
+        .map_err(|error| format!("Can't run xdg-open: {error}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("xdg-open couldn't open it ({status})."))
     }
 }
 
@@ -361,22 +529,33 @@ fn load_fishing_key(prefs: &Prefs) -> Option<Shortcut> {
     }
 }
 
-/// "Never" until the user picks a limit; a saved value no longer offered also means "Never".
-fn load_stop_after(prefs: &Prefs) -> usize {
-    let never = ui::STOP_AFTER.len() - 1;
-    let saved = prefs.get::<Option<u64>>(STOP_AFTER_PREF).flatten();
-    ui::STOP_AFTER
-        .iter()
-        .position(|(_, minutes)| *minutes == saved)
-        .unwrap_or(never)
+/// 10 minutes until the user picks a length; a saved null is Forever, and a saved length no
+/// longer offered goes back to 10 minutes. Reads the older "Stop after" key when the newer one
+/// isn't saved.
+fn load_fish_for(prefs: &Prefs) -> usize {
+    let find = |minutes: Option<u64>| {
+        ui::FISH_FOR
+            .iter()
+            .position(|length| length.minutes == minutes)
+    };
+    let default = find(DEFAULT_FISH_FOR_MINUTES).unwrap_or(0);
+    prefs
+        .get::<Option<u64>>(FISH_FOR_PREF)
+        .or_else(|| prefs.get::<Option<u64>>(STOP_AFTER_PREF))
+        .and_then(find)
+        .unwrap_or(default)
 }
 
 fn init() -> State {
-    State::new(Prefs::open(APP_ID))
+    let mut state = State::new(Prefs::open(APP_ID));
+    // The settings file exists from the first run, so Open always has something to show.
+    state.write_missing_settings();
+    state
 }
 
 fn setup(state: &mut State, waker: Waker) {
     state.waker = Some(waker.clone());
+    state.settings.set_waker(waker.clone());
     state.watcher = Some(Watcher::start(move || waker()));
 }
 
@@ -397,7 +576,8 @@ fn poll(state: &mut State, time: f64, tx: &mut Tx) -> bool {
             state.receive(report);
         }
     }
-    changed |= state.finish_install();
+    changed |= state.finish_jobs();
+    changed |= state.finish_saves();
     state.check_time_limit();
     if state.is_fishing() {
         tx.wake_after(SESSION_REFRESH);
@@ -407,6 +587,10 @@ fn poll(state: &mut State, time: f64, tx: &mut Tx) -> bool {
 }
 
 fn on_key(state: &mut State, event: &KeyEvent, _tx: &mut Tx) -> bool {
+    if state.is_fish_for_open() && event.key == Key::Escape {
+        state.close_fish_for();
+        return true;
+    }
     if state.screen == Screen::Settings && event.key == Key::Escape {
         state.close_settings();
         return true;
@@ -414,15 +598,69 @@ fn on_key(state: &mut State, event: &KeyEvent, _tx: &mut Tx) -> bool {
     false
 }
 
+/// Saves where the window sits. Wayland keeps window positions from apps, so there it saves
+/// nothing and the compositor places the window.
+fn save_window_position(state: &mut State, _tx: &mut Tx) {
+    let Some(placement) = state.app_window.as_ref().and_then(WindowHandle::placement) else {
+        return;
+    };
+    if placement.minimized || placement.maximized || placement.full_screen {
+        return;
+    }
+    let position = placement.position;
+    state.save(move |prefs| prefs.set(WINDOW_POSITION_PREF, &position));
+    // The process may end once the window closes; let queued writes land first.
+    if let Err(error) = state.settings.flush(SAVE_ON_CLOSE_LIMIT) {
+        eprintln!("pececito: {error}");
+    }
+    for result in state.settings.drain() {
+        if let Err(error) = result {
+            eprintln!("pececito: couldn't save settings: {error}");
+        }
+    }
+}
+
+/// The saved position, while a display still shows the top of the window to grab it by.
+fn saved_window_position(prefs: &Prefs, displays: &[Display]) -> Option<(i32, i32)> {
+    let (x, y) = prefs.get::<(i32, i32)>(WINDOW_POSITION_PREF)?;
+    let grab = (i64::from(x) + 48, i64::from(y) + 16);
+    displays
+        .iter()
+        .any(|display| {
+            let (left, top) = (i64::from(display.position.0), i64::from(display.position.1));
+            let (width, height) = (i64::from(display.size.0), i64::from(display.size.1));
+            (left..left + width).contains(&grab.0) && (top..top + height).contains(&grab.1)
+        })
+        .then_some((x, y))
+}
+
 fn main() {
     // Desktops match the window to `pececito.desktop`, and through it to the installed icon.
     rune::set_app_id(APP_ID);
-    rune::run(AppSpec::<State> {
-        min_size: Some((380.0, 560.0)),
+    let spec = AppSpec::<State> {
         setup: Some(setup),
         poll: Some(poll),
         on_key: Some(on_key),
-        ..AppSpec::new("Pececito", (400.0, 600.0), init, ui::view)
+        ..AppSpec::new("Pececito", WINDOW_SIZE, init, ui::view)
+    };
+    let app = rune::App::new(spec)
+        .on_close(save_window_position)
+        .on_quit(save_window_position);
+    let handle = app.handle();
+    let app = app.on_window(move |window| {
+        let window = window.clone();
+        handle.update(move |state, _tx| state.app_window = Some(window));
+    });
+    let prefs = Prefs::open(APP_ID);
+    rune::run_windows(move |displays| {
+        let options = WindowOptions {
+            min_size: Some(WINDOW_SIZE),
+            max_size: Some(WINDOW_SIZE),
+            resizable: false,
+            position: saved_window_position(&prefs, displays),
+            ..WindowOptions::default()
+        };
+        vec![WindowSpec::from_app("main", app).options(options)]
     });
 }
 
@@ -432,16 +670,22 @@ mod tests {
     use game::{GameProcess, Rect};
     use rune::{Env, PhysicalInput, Runtime};
 
-    const SIZE: (f32, f32) = (400.0, 600.0);
-
     fn runtime_with(prefs: Prefs) -> Runtime<State> {
         let env = Env {
             system_dark: true,
             scale: 2.0,
         };
-        let mut runtime = Runtime::new(State::new(prefs), ui::view, SIZE, env);
+        let mut runtime = Runtime::new(State::new(prefs), ui::view, WINDOW_SIZE, env);
         runtime.frame(0.0);
         runtime
+    }
+
+    /// Waits for queued settings writes and takes in their results, as `poll` does.
+    fn settle_saves(runtime: &mut Runtime<State>) {
+        assert_eq!(runtime.state.settings.flush(Duration::from_secs(5)), Ok(()));
+        runtime.update(|state, _tx| {
+            state.finish_saves();
+        });
     }
 
     fn runtime() -> Runtime<State> {
@@ -709,17 +953,205 @@ mod tests {
     #[test]
     fn the_session_ends_after_the_time_limit() {
         let mut runtime = ready();
-        runtime.update(|state, _tx| state.pick_stop_after(0));
+        runtime.update(|state, _tx| state.pick_fish_for(0));
         tap(&mut runtime, "fish");
         let started = runtime.state.clock;
         runtime.update(|state, tx| {
-            poll(state, started + 29.0 * 60.0, tx);
+            poll(state, started + 4.0 * 60.0, tx);
         });
         assert!(runtime.state.is_fishing());
         runtime.update(|state, tx| {
-            poll(state, started + 30.0 * 60.0, tx);
+            poll(state, started + 5.0 * 60.0, tx);
         });
-        assert_eq!(stop_reason(&runtime), Some(StopReason::TimeUp("30 min")));
+        assert_eq!(stop_reason(&runtime), Some(StopReason::TimeUp("5 min")));
+    }
+
+    #[test]
+    fn fish_for_snaps_to_the_nearest_length() {
+        assert_eq!(ui::nearest_length(0.0), 0);
+        assert_eq!(ui::nearest_length(0.2), 1);
+        assert_eq!(
+            ui::nearest_length(0.7),
+            3,
+            "the gap before Forever belongs to 2 hours"
+        );
+        assert_eq!(ui::nearest_length(0.8), 4);
+        assert_eq!(ui::nearest_length(1.0), ui::FISH_FOR.len() - 1);
+    }
+
+    #[test]
+    fn fish_for_opens_above_the_buttons_and_closes() {
+        let mut runtime = runtime();
+        assert!(runtime.find("fish-for").is_none());
+        tap(&mut runtime, "fish-for-button");
+        assert!(runtime.find("fish-for").is_some(), "the slider shows");
+
+        runtime.update(|state, tx| {
+            let escape = KeyEvent {
+                key: Key::Escape,
+                mods: Mods::default(),
+            };
+            on_key(state, &escape, tx);
+        });
+        assert!(!runtime.state.is_fish_for_open(), "Escape closes it");
+        // The closing popover takes presses until it fades.
+        runtime.frame(0.5);
+
+        tap(&mut runtime, "fish-for-button");
+        tap(&mut runtime, "fish-for-button");
+        assert!(
+            !runtime.state.is_fish_for_open(),
+            "the button closes it too"
+        );
+    }
+
+    #[test]
+    fn a_saved_forever_stays_forever() {
+        let mut prefs = Prefs::memory();
+        assert!(prefs.set(FISH_FOR_PREF, &None::<u64>).is_ok());
+        assert_eq!(load_fish_for(&prefs), ui::FISH_FOR.len() - 1);
+        assert!(prefs.set(FISH_FOR_PREF, &Some(30_u64)).is_ok());
+        assert_eq!(load_fish_for(&prefs), 1, "no longer offered");
+    }
+
+    #[test]
+    fn a_saved_window_position_needs_a_display_to_show_it() {
+        let display = |position: (i32, i32)| Display {
+            id: None,
+            name: None,
+            position,
+            size: (1920, 1080),
+            scale: 1.0,
+            primary: false,
+        };
+        let displays = [display((0, 0)), display((1920, 0))];
+        let mut prefs = Prefs::memory();
+        assert_eq!(saved_window_position(&prefs, &displays), None, "none saved");
+
+        assert!(prefs.set(WINDOW_POSITION_PREF, &(2400, 300)).is_ok());
+        assert_eq!(
+            saved_window_position(&prefs, &displays),
+            Some((2400, 300)),
+            "on the second display"
+        );
+        assert_eq!(
+            saved_window_position(&prefs, &displays[..1]),
+            None,
+            "that display is gone"
+        );
+    }
+
+    #[test]
+    fn a_saved_stop_after_carries_over() {
+        let saved = |minutes: Option<u64>| {
+            let mut prefs = Prefs::memory();
+            assert!(prefs.set(STOP_AFTER_PREF, &minutes).is_ok());
+            load_fish_for(&prefs)
+        };
+        assert_eq!(ui::FISH_FOR[saved(Some(120))].label, "2 hours");
+        assert_eq!(ui::FISH_FOR[saved(None)].label, "Forever");
+        assert_eq!(
+            ui::FISH_FOR[saved(Some(30))].label,
+            "10 min",
+            "no 30 min any more"
+        );
+
+        let mut prefs = Prefs::memory();
+        assert!(prefs.set(STOP_AFTER_PREF, &Some(120_u64)).is_ok());
+        assert!(prefs.set(FISH_FOR_PREF, &Some(5_u64)).is_ok());
+        assert_eq!(
+            ui::FISH_FOR[load_fish_for(&prefs)].label,
+            "5 min",
+            "the newer key wins"
+        );
+    }
+
+    #[test]
+    fn the_old_stop_after_key_is_dropped_once_carried_over() -> Result<(), String> {
+        let directory =
+            std::env::temp_dir().join(format!("pececito-legacy-{}", std::process::id()));
+        let path = directory.join("prefs.json");
+        let mut legacy = Prefs::at(&path);
+        legacy
+            .set(STOP_AFTER_PREF, &Some(60_u64))
+            .map_err(|error| error.to_string())?;
+        let mut runtime = runtime_with(Prefs::at(&path));
+        runtime.update(|state, _tx| state.write_missing_settings());
+        settle_saves(&mut runtime);
+        let written = Prefs::at(&path);
+
+        std::fs::remove_dir_all(&directory).map_err(|error| error.to_string())?;
+        assert!(!written.contains(STOP_AFTER_PREF));
+        assert_eq!(written.get::<Option<u64>>(FISH_FOR_PREF), Some(Some(60)));
+        Ok(())
+    }
+
+    #[test]
+    fn a_failed_save_shows_its_error() -> Result<(), std::io::Error> {
+        let blocker = std::env::temp_dir().join(format!("pececito-blocked-{}", std::process::id()));
+        std::fs::write(&blocker, "a file where a folder should be")?;
+        let mut runtime = runtime_with(Prefs::at(blocker.join("prefs.json")));
+        runtime.update(|state, _tx| state.pick_hook_delay(0));
+        settle_saves(&mut runtime);
+
+        std::fs::remove_file(&blocker)?;
+        assert!(runtime.state.save_error.is_some());
+        assert_eq!(
+            runtime.state.hook_delay,
+            HookDelay::Short,
+            "kept for this run"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn dragging_fish_for_changes_the_limit_only_on_release() {
+        let mut runtime = runtime();
+        let before = runtime.state.fish_for;
+        tap(&mut runtime, "fish-for-button");
+        let Some((x, y)) = runtime.find("fish-for") else {
+            panic!("no slider")
+        };
+        // The slider's left end is 5 min.
+        let left = x - 150.0;
+        runtime.pointer_down(left, y);
+        runtime.pointer_move(left + 2.0, y);
+        runtime.frame(1.0 / 60.0);
+        assert_eq!(runtime.state.shown_fish_for(), 0, "the drag shows 5 min");
+        assert_eq!(
+            runtime.state.fish_for, before,
+            "the limit holds while dragging"
+        );
+
+        runtime.pointer_up(left + 2.0, y);
+        runtime.frame(1.0 / 60.0);
+        assert_eq!(runtime.state.fish_for, 0, "released on 5 min");
+    }
+
+    #[test]
+    fn a_cancelled_fish_for_drag_changes_nothing() {
+        let mut runtime = runtime();
+        let before = runtime.state.fish_for;
+        tap(&mut runtime, "fish-for-button");
+        runtime.update(|state, _tx| state.drag_fish_for(0));
+        runtime.update(|state, _tx| state.end_fish_for_drag(false));
+        assert_eq!(runtime.state.fish_for, before);
+        assert_eq!(runtime.state.fish_for_picker, FishForPicker::Open);
+    }
+
+    #[test]
+    fn fish_for_steps_with_the_keyboard() {
+        let mut runtime = runtime();
+        runtime.update(|state, tx| ui::step_fish_for(state, 1, tx));
+        assert_eq!(runtime.state.fish_for, 2, "10 minutes up to 1 hour");
+        runtime.update(|state, tx| ui::step_fish_for(state, 10, tx));
+        assert_eq!(
+            runtime.state.fish_for,
+            ui::FISH_FOR.len() - 1,
+            "clamped at Forever"
+        );
+        runtime.update(|state, tx| ui::step_fish_for(state, -10, tx));
+        assert_eq!(runtime.state.fish_for, 0, "clamped at the shortest");
     }
 
     #[test]
@@ -732,16 +1164,17 @@ mod tests {
         let mut runtime = runtime_with(Prefs::at(&path));
         runtime.update(|state, _tx| {
             state.pick_hook_delay(2);
-            state.pick_stop_after(1);
+            state.pick_fish_for(1);
         });
+        settle_saves(&mut runtime);
         let restored = State::new(Prefs::at(&path));
 
         std::fs::remove_dir_all(&directory)?;
         assert_eq!(fresh.hook_delay, HookDelay::Medium);
-        assert_eq!(fresh.stop_after, ui::STOP_AFTER.len() - 1, "Never");
+        assert_eq!(fresh.fish_for, 1, "10 minutes");
         assert_eq!(runtime.state.save_error, None);
         assert_eq!(restored.hook_delay, HookDelay::Long);
-        assert_eq!(restored.stop_after, 1);
+        assert_eq!(restored.fish_for, 1);
         Ok(())
     }
 
@@ -780,6 +1213,41 @@ mod tests {
         assert_eq!(runtime.state.session, Session::Idle);
         tap(&mut runtime, "open-settings");
         assert_eq!(runtime.state.screen, Screen::Settings);
+    }
+
+    #[test]
+    fn default_settings_are_written_to_the_file() -> Result<(), String> {
+        let directory =
+            std::env::temp_dir().join(format!("pececito-defaults-{}", std::process::id()));
+        let path = directory.join("prefs.json");
+        let mut runtime = runtime_with(Prefs::at(&path));
+        runtime.update(|state, _tx| state.pick_hook_delay(2));
+        runtime.update(|state, _tx| state.write_missing_settings());
+        settle_saves(&mut runtime);
+        let save_error = runtime.state.save_error.clone();
+        let written = Prefs::at(&path);
+
+        std::fs::remove_dir_all(&directory).map_err(|error| error.to_string())?;
+        assert_eq!(save_error, None);
+        assert_eq!(
+            written.get::<String>(HOOK_DELAY_PREF),
+            Some("long".into()),
+            "kept"
+        );
+        assert_eq!(
+            written.get::<Option<String>>(FISHING_KEY_PREF),
+            Some(Some("space".into()))
+        );
+        assert_eq!(written.get::<Option<u64>>(FISH_FOR_PREF), Some(Some(10)));
+        Ok(())
+    }
+
+    #[test]
+    fn settings_kept_in_memory_have_no_file_to_open() {
+        let mut runtime = runtime();
+        tap(&mut runtime, "settings");
+        tap(&mut runtime, "open-config");
+        assert!(matches!(runtime.state.open_config, Job::Idle));
     }
 
     #[test]
@@ -823,10 +1291,12 @@ mod tests {
 
         let mut runtime = runtime_with(Prefs::at(&path));
         record(&mut runtime, PhysicalKeyCode::KeyF, shift());
+        settle_saves(&mut runtime);
         let save_error = runtime.state.save_error.clone();
         let restored = load_fishing_key(&Prefs::at(&path));
 
         record(&mut runtime, PhysicalKeyCode::Backspace, Mods::default());
+        settle_saves(&mut runtime);
         let cleared = load_fishing_key(&Prefs::at(&path));
 
         std::fs::remove_dir_all(&directory)?;
