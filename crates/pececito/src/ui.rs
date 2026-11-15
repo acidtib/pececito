@@ -267,7 +267,7 @@ fn connection(state: &State, kit: &Kit) -> El {
 
 /// What the bot is doing now, or why it can't start.
 fn status_card(state: &State, kit: &Kit) -> El {
-    let card = panel(kit).key("status").gap(12.0).h(144.0);
+    let card = panel(kit).key("status").gap(12.0).min_h(144.0);
     if let Session::Fishing(fishing) = &state.session {
         return fishing_status(card, fishing, state.clock, kit);
     }

@@ -2,8 +2,11 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use x11rb::errors::ReplyError;
+use x11rb::protocol::ErrorKind;
 use x11rb::protocol::xproto::{ConnectionExt, ImageFormat};
 use x11rb::rust_connection::RustConnection;
+use x11rb::x11_utils::X11Error;
 
 use crate::{GameProcess, GameWindow};
 
@@ -219,7 +222,14 @@ impl SignalReader {
             )
             .map_err(|error| failed(&error))?
             .reply()
-            .map_err(|error| failed(&error))?;
+            .map_err(|error| match error {
+                // The X server refuses to read a window that isn't viewable.
+                ReplyError::X11Error(X11Error {
+                    error_kind: ErrorKind::Match,
+                    ..
+                }) => "the window is minimized or on another desktop".to_string(),
+                error => failed(&error),
+            })?;
         let pixels = usize::from(width) * usize::from(height);
         if image.data.len() != pixels * 4 {
             return Err(format!(
