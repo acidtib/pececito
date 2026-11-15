@@ -614,7 +614,7 @@ mod tests {
             });
         assert_eq!(
             (addon_version(), fingerprint),
-            (Some(2), 12_126_199_177_681_362_065)
+            (Some(3), 228_380_836_715_015_028)
         );
     }
 }

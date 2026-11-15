@@ -5,7 +5,7 @@
 -- The app reads the same layout, so change both together and give the addon a new version.
 
 -- The "## Version" in Pececito.toc.
-local VERSION = 2
+local VERSION = 3
 local MAGENTA = 5
 local CYAN = 3
 local VERSION_CELLS = 2
@@ -105,6 +105,19 @@ show(STATE_IDLE)
 strip:RegisterEvent("DISPLAY_SIZE_CHANGED")
 strip:RegisterEvent("UI_SCALE_CHANGED")
 
+-- In combat the game hands addons some values as secrets, which raise an error when compared,
+-- tested or used in math. A secret reads as nil here.
+local function readable(value)
+    if issecretvalue and issecretvalue(value) then
+        return nil
+    end
+    return value
+end
+
+local function inCombat()
+    return InCombatLockdown ~= nil and InCombatLockdown()
+end
+
 local function fishingName()
     if C_Spell and C_Spell.GetSpellName then
         return C_Spell.GetSpellName(7620)
@@ -120,10 +133,14 @@ local function isFishing()
         return false
     end
     local ok, name, _, _, _, _, _, _, spellID = pcall(UnitChannelInfo, "player")
-    if not ok or not name then
+    if not ok then
         return false
     end
-    return FISHING_SPELLS[spellID] == true or name == fishingName()
+    name, spellID = readable(name), readable(spellID)
+    if not name then
+        return false
+    end
+    return (spellID ~= nil and FISHING_SPELLS[spellID] == true) or name == fishingName()
 end
 
 local function isCasting()
@@ -131,13 +148,13 @@ local function isCasting()
         return false
     end
     local ok, name = pcall(UnitCastingInfo, "player")
-    return ok and name ~= nil
+    return ok and readable(name) ~= nil
 end
 
 -- Item data can be missing right after login; an unknown item counts as a pole, so the app
 -- isn't told to stop for a pole that is there.
 local function holdsFishingPole()
-    local itemID = GetInventoryItemID and GetInventoryItemID("player", MAIN_HAND_SLOT)
+    local itemID = GetInventoryItemID and readable(GetInventoryItemID("player", MAIN_HAND_SLOT))
     if not itemID then
         return false
     end
@@ -146,6 +163,7 @@ local function holdsFishingPole()
         return true
     end
     local ok, _, _, _, _, _, classID, subclassID = pcall(query, itemID)
+    classID, subclassID = readable(classID), readable(subclassID)
     if not ok or classID == nil then
         return true
     end
@@ -158,14 +176,20 @@ local function position()
         return nil
     end
     local ok, map = pcall(C_Map.GetBestMapForUnit, "player")
-    if not ok or not map then
+    map = ok and readable(map)
+    if not map then
         return nil
     end
     local found, point = pcall(C_Map.GetPlayerMapPosition, map, "player")
-    if not found or not point then
+    point = found and readable(point)
+    if not point then
         return nil
     end
-    local x, y = point:GetXY()
+    local read, x, y = pcall(point.GetXY, point)
+    x, y = read and readable(x), read and readable(y)
+    if not (x and y) then
+        return nil
+    end
     return map, x, y
 end
 
@@ -173,10 +197,14 @@ local lastMap, lastX, lastY
 local wasMoving = false
 
 -- A walk, a knockback or a teleport each count once, when they start. Speed covers the places
--- with no map position.
+-- with no map position. With neither readable, the last answer stands.
 local function trackMoves()
     local map, x, y = position()
-    local moving = GetUnitSpeed ~= nil and GetUnitSpeed("player") > 0
+    local speed = GetUnitSpeed and readable(GetUnitSpeed("player"))
+    local moving
+    if speed then
+        moving = speed > 0
+    end
     if map and lastMap then
         moving = moving
             or map ~= lastMap
@@ -184,6 +212,9 @@ local function trackMoves()
             or math.abs(y - lastY) > MOVE_DISTANCE
     end
     lastMap, lastX, lastY = map, x, y
+    if moving == nil then
+        return
+    end
     if moving and not wasMoving then
         moves = moves + 1
     end
@@ -201,14 +232,16 @@ local function readLoot()
     if lootRead or not (GetNumLootItems and GetLootSlotLink) then
         return
     end
-    if IsFishingLoot and not IsFishingLoot() then
+    if IsFishingLoot and not readable(IsFishingLoot()) then
         return
     end
-    for slot = 1, GetNumLootItems() do
-        local link = GetLootSlotLink(slot)
-        local item = link and tonumber(link:match("item:(%d+)"))
+    local slots = readable(GetNumLootItems()) or 0
+    for slot = 1, slots do
+        local link = readable(GetLootSlotLink(slot))
+        local item = type(link) == "string" and tonumber(link:match("item:(%d+)"))
         if item then
             local _, name, quantity = GetLootSlotInfo(slot)
+            name, quantity = readable(name), readable(quantity)
             PececitoItems = PececitoItems or {}
             if name then
                 PececitoItems[item] = name
@@ -253,7 +286,10 @@ strip:SetScript("OnUpdate", function(_, elapsed)
     showNextLoot(sinceUpdate)
     sinceUpdate = 0
     trackMoves()
-    if isFishing() then
+    -- The app waits out a busy player, which suits a fight.
+    if inCombat() then
+        show(STATE_BUSY)
+    elseif isFishing() then
         show(STATE_FISHING)
     elseif isCasting() then
         show(STATE_BUSY)

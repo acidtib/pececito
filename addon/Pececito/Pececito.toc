@@ -3,7 +3,7 @@
 ## Notes: Companion addon for the Pececito desktop app.
 ## Category: Professions
 ## IconTexture: Interface\AddOns\Pececito\Icon.png
-## Version: 2
+## Version: 3
 ## SavedVariables: PececitoItems
 
 Pececito.lua
