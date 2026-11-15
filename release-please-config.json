@@ -15,7 +15,17 @@
         {
           "type": "toml",
           "path": "Cargo.lock",
-          "jsonpath": "$.package[?(@.name=='pececito' || @.name=='game' || @.name=='fishing')].version"
+          "jsonpath": "$.package[?(@.name==='pececito')].version"
+        },
+        {
+          "type": "toml",
+          "path": "Cargo.lock",
+          "jsonpath": "$.package[?(@.name==='game')].version"
+        },
+        {
+          "type": "toml",
+          "path": "Cargo.lock",
+          "jsonpath": "$.package[?(@.name==='fishing')].version"
         }
       ]
     }
