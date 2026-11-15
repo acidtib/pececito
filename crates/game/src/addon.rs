@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -20,6 +21,9 @@ const CYAN: u32 = 3;
 const VERSION_CELLS: usize = 2;
 const STATE_CELLS: usize = 1;
 const MOVES_CELLS: usize = 1;
+const LOOT_SERIAL_CELLS: usize = 1;
+const LOOT_ITEM_CELLS: usize = 7;
+const LOOT_COUNT_CELLS: usize = 2;
 const CHECKSUM_CELLS: usize = 2;
 
 /// What the Pececito addon shows in the game.
@@ -28,6 +32,16 @@ pub struct Frame {
     pub state: PlayerState,
     /// Goes up by one, wrapping around, each time the player starts moving.
     pub moves: u32,
+    pub loot: Loot,
+}
+
+/// The item the player looted last from fishing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Loot {
+    /// Goes up by one, wrapping around, with each looted item; zero until the first.
+    pub serial: u32,
+    pub item: u32,
+    pub count: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -139,7 +153,32 @@ fn addon_files_in(game: &Path) -> AddonFiles {
     })
 }
 
-/// Reads the addon's squares from the game window, keeping one X connection for repeated reads.
+/// The names of items the addon has seen looted, by item id. The game writes them when it
+/// reloads or the player logs out, so an item looted since then has no name yet.
+pub fn item_names(process: &GameProcess) -> HashMap<u32, String> {
+    let mut names = HashMap::new();
+    let accounts = fs::read_link(format!("/proc/{}/cwd", process.pid))
+        .and_then(|game| fs::read_dir(game.join("WTF").join("Account")));
+    for account in accounts.into_iter().flatten().flatten() {
+        let saved = account.path().join("SavedVariables").join("Pececito.lua");
+        if let Ok(saved) = fs::read_to_string(saved) {
+            names.extend(parse_item_names(&saved));
+        }
+    }
+    names
+}
+
+/// The `[id] = "name",` lines of the saved `PececitoItems` table.
+fn parse_item_names(saved: &str) -> impl Iterator<Item = (u32, String)> {
+    saved.lines().filter_map(|line| {
+        let (item, name) = line.trim().strip_prefix('[')?.split_once("] = \"")?;
+        let name = name.strip_suffix(',').unwrap_or(name).strip_suffix('"')?;
+        let name = name.replace("\\\"", "\"").replace("\\\\", "\\");
+        Some((item.parse().ok()?, name))
+    })
+}
+
+/// Reads the addon's strip from the game window, keeping one X connection for repeated reads.
 pub struct SignalReader {
     connection: RustConnection,
     window: u32,
@@ -273,7 +312,14 @@ fn decode(data: &[u8], width: usize) -> Option<Frame> {
         _ => return None,
     };
     let moves = cells.number(MOVES_CELLS)?;
-    cells.checksum_matches().then_some(Frame { state, moves })
+    let loot = Loot {
+        serial: cells.number(LOOT_SERIAL_CELLS)?,
+        item: cells.number(LOOT_ITEM_CELLS)?,
+        count: cells.number(LOOT_COUNT_CELLS)?,
+    };
+    cells
+        .checksum_matches()
+        .then_some(Frame { state, moves, loot })
 }
 
 #[cfg(test)]
@@ -300,9 +346,22 @@ mod tests {
     }
 
     fn strip_with(state: u32, moves: u32) -> Vec<u32> {
+        strip_with_loot(state, moves, NO_LOOT)
+    }
+
+    const NO_LOOT: Loot = Loot {
+        serial: 0,
+        item: 0,
+        count: 0,
+    };
+
+    fn strip_with_loot(state: u32, moves: u32, loot: Loot) -> Vec<u32> {
         let mut payload = digits(addon_version().unwrap_or(0), 2);
         payload.push(state);
         payload.push(moves);
+        payload.push(loot.serial);
+        payload.extend(digits(loot.item, 7));
+        payload.extend(digits(loot.count, 2));
         let sum: u32 = payload
             .iter()
             .zip(1..)
@@ -346,9 +405,22 @@ mod tests {
         for (number, state) in (0..).zip(states) {
             assert_eq!(
                 read(&strip(number), SIDE, 0),
-                Some(Frame { state, moves: 0 })
+                Some(Frame {
+                    state,
+                    moves: 0,
+                    loot: NO_LOOT
+                })
             );
         }
+        let loot = Loot {
+            serial: 5,
+            item: 220_134,
+            count: 12,
+        };
+        assert_eq!(
+            read(&strip_with_loot(3, 1, loot), SIDE, 0).map(|frame| frame.loot),
+            Some(loot)
+        );
         assert_eq!(
             read(&strip_with(0, 6), SIDE, 0).map(|frame| frame.moves),
             Some(6)
@@ -361,6 +433,7 @@ mod tests {
         let frame = Some(Frame {
             state: PlayerState::Fishing,
             moves: 0,
+            loot: NO_LOOT,
         });
         assert_eq!(read(&strip(3), SIDE, 100), frame);
         assert_eq!(read(&strip(3), 1, 0), frame);
@@ -397,6 +470,21 @@ mod tests {
             read(&[MAGENTA, green, CYAN], SIDE, 0),
             None,
             "the first release's three squares"
+        );
+    }
+
+    #[test]
+    fn reads_saved_item_names() {
+        let saved = "\nPececitoItems = {\n[6358] = \"Oily Blackmouth\",\n\t[6522] = \"Deviate \\\"Fish\\\"\",\n[13754] = \"Raw Glossy Mightfish\"\n}\n";
+        let names: HashMap<u32, String> = parse_item_names(saved).collect();
+        assert_eq!(names.len(), 3);
+        assert_eq!(
+            names.get(&6358).map(String::as_str),
+            Some("Oily Blackmouth")
+        );
+        assert_eq!(
+            names.get(&6522).map(String::as_str),
+            Some("Deviate \"Fish\"")
         );
     }
 
@@ -466,7 +554,7 @@ mod tests {
             });
         assert_eq!(
             (addon_version(), fingerprint),
-            (Some(2), 10_802_587_795_968_827_633)
+            (Some(2), 12_126_199_177_681_362_065)
         );
     }
 }

@@ -24,6 +24,8 @@ const SPLASH_THRESHOLD: f32 = -38.0;
 const FOCUS_DELAY: (f64, f64) = (0.6, 1.6);
 /// Hooking opens the loot, which auto loot then takes.
 const LOOT_TIME: f64 = 3.0;
+/// Loot that shows up later than this after a bite isn't that bite's.
+const LOOT_WAIT: f64 = 10.0;
 /// The bobber sits in front of the camera, so its splash is close to centered; sounds off to one
 /// side come from somewhere else.
 const MAX_BALANCE: f32 = 6.0;
@@ -236,11 +238,20 @@ pub enum Outcome {
     Interrupted,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Cast {
     pub outcome: Outcome,
     /// When the cast started.
     pub at: f64,
+    /// What a hooked cast caught, as far as the game has said.
+    pub loot: Vec<Loot>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Loot {
+    /// The game's id for the item.
+    pub item: u32,
+    pub count: u32,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -341,6 +352,26 @@ impl Run {
     pub fn resume(&mut self, now: f64) {
         if let Phase::Paused(_) = self.phase {
             self.enter(Phase::Ready, now);
+        }
+    }
+
+    /// The player looted an item from fishing; returns whether a hooked cast took it. Loot can
+    /// arrive after the next cast started, so it goes to the last hook, not the last cast.
+    pub fn looted(&mut self, now: f64, loot: Loot) -> bool {
+        let hooked = self
+            .history
+            .iter_mut()
+            .rev()
+            .find_map(|cast| match cast.outcome {
+                Outcome::Hooked { after } => Some((cast.at + after, cast)),
+                _ => None,
+            });
+        match hooked {
+            Some((bite, cast)) if now - bite <= LOOT_WAIT => {
+                cast.loot.push(loot);
+                true
+            }
+            _ => false,
         }
     }
 
@@ -466,6 +497,7 @@ impl Run {
         self.history.push(Cast {
             outcome,
             at: self.cast_started,
+            loot: Vec::new(),
         });
     }
 }
@@ -817,6 +849,45 @@ mod tests {
         assert_eq!(run.phase, Phase::Waiting);
         assert!(!run.key_due(now), "pressing now would reel the line in");
         assert_eq!(run.casts(), 2);
+    }
+
+    #[test]
+    fn loot_goes_to_the_hook_it_came_from() {
+        let fish = Loot {
+            item: 6358,
+            count: 2,
+        };
+        let junk = Loot {
+            item: 6297,
+            count: 1,
+        };
+        let mut run = Run::new(0.0, HookDelay::Medium, 7);
+        assert!(!run.looted(0.0, fish), "nothing was hooked");
+
+        let now = cast(&mut run, 0.0);
+        let now = play(&mut run, now, 3.0, quiet(), Activity::Fishing);
+        let now = play(
+            &mut run,
+            now,
+            0.2 + HookDelay::Medium.range().1,
+            splash(),
+            Activity::Fishing,
+        );
+        run.key_pressed(now);
+        assert!(run.looted(now + 0.5, fish));
+
+        let now = play(&mut run, now, LOOT_TIME + FRAME, quiet(), Activity::Idle);
+        let now = cast(&mut run, now);
+        let now = play(&mut run, now, 1.0, quiet(), Activity::Idle);
+        assert_eq!(last_outcome(&run), Some(Outcome::Interrupted));
+        assert!(run.looted(now, junk), "the next cast already ended");
+        assert_eq!(run.history[0].loot, [fish, junk]);
+        assert!(run.history[1].loot.is_empty());
+
+        assert!(
+            !run.looted(now + LOOT_WAIT, fish),
+            "too late to be the hook's"
+        );
     }
 
     #[test]

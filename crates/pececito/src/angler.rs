@@ -1,8 +1,9 @@
+use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use fishing::{Activity, HookDelay, Level, Run};
+use fishing::{Activity, HookDelay, Level, Loot, Run};
 use game::{FocusReader, GameAudio, GameWindow, Keyboard, Keystroke, PlayerState, SignalReader};
 
 /// The longest the loop goes without a tick when the game sends no sound.
@@ -17,6 +18,8 @@ const SIGNAL_GRACE: Duration = Duration::from_secs(2);
 #[derive(Debug)]
 pub enum Report {
     Run(Run),
+    /// The names of items the addon has seen looted, by item id.
+    ItemNames(HashMap<u32, String>),
     /// Whether the game window has focus, which the loop needs to press keys.
     Focus(bool),
     /// The Pececito addon isn't showing in the game, so fishing stopped.
@@ -93,6 +96,7 @@ impl Fishing<'_> {
             report(Report::AddonMissing);
             return Ok(());
         }
+        report(Report::ItemNames(game::item_names(&self.window.process)));
         let mut keyboard = Keyboard::new()?;
         let audio = GameAudio::open(self.window.process.pid)?;
         let seed = SystemTime::now()
@@ -105,12 +109,14 @@ impl Fishing<'_> {
         // A change counts once two reads in a row agree; single reads flicker as the channel ends.
         let mut previous_read = None;
         let mut moves = None;
+        let mut loot_serial = None;
         let mut signal_read = Instant::now();
         let mut signal_seen = Instant::now();
         loop {
             let chunk = audio.next(TICK)?;
             let now = started.elapsed().as_secs_f64();
             let before = (run.phase, run.history.len());
+            let mut looted = false;
             let Some(commands) = self.commands() else {
                 return Ok(());
             };
@@ -142,6 +148,16 @@ impl Fishing<'_> {
                                 run.moved(now);
                             }
                             moves = Some(frame.moves);
+                            if loot_serial.is_some_and(|serial| serial != frame.loot.serial) {
+                                looted |= run.looted(
+                                    now,
+                                    Loot {
+                                        item: frame.loot.item,
+                                        count: frame.loot.count,
+                                    },
+                                );
+                            }
+                            loot_serial = Some(frame.loot.serial);
                             activity = match frame.state {
                                 PlayerState::Fishing => Activity::Fishing,
                                 PlayerState::Busy => Activity::Busy,
@@ -177,7 +193,7 @@ impl Fishing<'_> {
                     run.key_pressed(now);
                 }
             }
-            if (run.phase, run.history.len()) != before {
+            if looted || (run.phase, run.history.len()) != before {
                 report(Report::Run(run.clone()));
             }
         }

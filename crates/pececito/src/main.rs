@@ -5,6 +5,7 @@ mod angler;
 mod settings;
 mod ui;
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::process::Command;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
@@ -168,6 +169,8 @@ struct State {
     save_error: Option<String>,
     watcher: Option<Watcher>,
     angler: Option<Angler>,
+    /// The names of items the addon has seen looted, by item id.
+    item_names: HashMap<u32, String>,
     install: Job,
     open_config: Job,
     /// Set by `setup`; tests have none, so starting a session there presses no keys.
@@ -199,6 +202,7 @@ impl State {
             save_error: None,
             watcher: None,
             angler: None,
+            item_names: HashMap::new(),
             install: Job::Idle,
             open_config: Job::Idle,
             waker: None,
@@ -317,6 +321,7 @@ impl State {
         };
         match report {
             Report::Run(run) => fishing.run = run,
+            Report::ItemNames(names) => self.item_names.extend(names),
             Report::Focus(has_focus) => fishing.has_focus = has_focus,
             Report::AddonMissing => self.end(StopReason::AddonMissing),
             Report::Failed(error) => self.end(StopReason::Failed(error)),

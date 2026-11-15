@@ -4,5 +4,6 @@
 ## Category: Professions
 ## IconTexture: Interface\AddOns\Pececito\Icon.png
 ## Version: 2
+## SavedVariables: PececitoItems
 
 Pececito.lua

@@ -35,7 +35,9 @@ mod window;
 use std::path::Path;
 
 use addon::{AddonFiles, addon_files};
-pub use addon::{AddonMismatch, Frame, PlayerState, SignalReader, addon_version, install_addon};
+pub use addon::{
+    AddonMismatch, Frame, Loot, PlayerState, SignalReader, addon_version, install_addon, item_names,
+};
 pub use audio::{CHUNK_FRAMES, GameAudio, SAMPLE_RATE};
 pub use keyboard::{Keyboard, Keystroke};
 pub use watcher::Watcher;

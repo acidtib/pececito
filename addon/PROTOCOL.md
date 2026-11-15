@@ -35,6 +35,9 @@ Cells run left to right from the corner of the window:
 | 2     | Addon version | The `## Version` in `Pececito.toc`.                      |
 | 1     | Player state  | 0 idle, 1 no fishing pole, 2 other cast, 3 fishing.      |
 | 1     | Moves         | Goes up by one each time the player starts moving.       |
+| 1     | Loot counter  | Goes up by one with each item looted from fishing.       |
+| 7     | Loot item     | The id of the last item looted.                          |
+| 2     | Loot count    | How many of it, up to 63.                                |
 | 2     | Checksum      | See below.                                               |
 
 The two markers and the version never move. Everything after the version belongs to that version:
@@ -61,7 +64,10 @@ both on the strip until the next event. The app acts when the counter changes.
 
 ## Limits
 
-- Text doesn't fit at a useful rate. Send ids and let the app look names up.
+- Text doesn't fit at a useful rate. Send ids and let the app look names up. For item names, the
+  addon keeps a table of the items it has seen in its saved variables (`PececitoItems`), which the
+  game writes to `WTF/Account/<account>/SavedVariables/Pececito.lua` on `/reload` and logout. The
+  app reads that file when a session starts.
 - The colors were measured as exact on one setup, Proton on Linux at native resolution. Render
   scaling below 100% blurs 3 pixel cells and hasn't been tested.
 - The app can't read the strip while the game window is minimized or its corner is off-screen.

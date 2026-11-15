@@ -11,6 +11,9 @@ local CYAN = 3
 local VERSION_CELLS = 2
 local STATE_CELLS = 1
 local MOVES_CELLS = 1
+local LOOT_SERIAL_CELLS = 1
+local LOOT_ITEM_CELLS = 7
+local LOOT_COUNT_CELLS = 2
 local CHECKSUM_CELLS = 2
 local STATE_IDLE = 0
 local STATE_NO_POLE = 1
@@ -26,6 +29,8 @@ local CELL_PIXELS = 3
 local UPDATE_INTERVAL = 0.05
 -- Map positions run from 0 to 1 across a zone; a still player's doesn't change at all.
 local MOVE_DISTANCE = 0.0001
+-- How long one looted item stays on the strip; the app needs two reads, 0.1 seconds apart.
+local LOOT_HOLD = 0.5
 
 -- On WorldFrame, not UIParent: hiding the UI (Alt+Z, or addons that hide it while fishing)
 -- hides UIParent and everything on it.
@@ -35,7 +40,9 @@ strip:SetIgnoreParentScale(true)
 strip:SetPoint("TOPLEFT", WorldFrame, "TOPLEFT", 0, 0)
 
 local cells = {}
-for index = 1, 2 + VERSION_CELLS + STATE_CELLS + MOVES_CELLS + CHECKSUM_CELLS do
+local CELLS = 2 + VERSION_CELLS + STATE_CELLS + MOVES_CELLS + LOOT_SERIAL_CELLS + LOOT_ITEM_CELLS
+    + LOOT_COUNT_CELLS + CHECKSUM_CELLS
+for index = 1, CELLS do
     cells[index] = strip:CreateTexture(nil, "OVERLAY")
 end
 
@@ -55,6 +62,8 @@ end
 
 -- How many times the player started moving, which the app watches for a change.
 local moves = 0
+-- The looted item on the strip, and how many items have been on it.
+local lootSerial, lootItem, lootCount = 0, 0, 0
 
 local function show(state)
     for index = #payload, 1, -1 do
@@ -63,6 +72,9 @@ local function show(state)
     put(VERSION, VERSION_CELLS)
     put(state, STATE_CELLS)
     put(moves % 8 ^ MOVES_CELLS, MOVES_CELLS)
+    put(lootSerial % 8 ^ LOOT_SERIAL_CELLS, LOOT_SERIAL_CELLS)
+    put(lootItem % 8 ^ LOOT_ITEM_CELLS, LOOT_ITEM_CELLS)
+    put(math.min(lootCount, 8 ^ LOOT_COUNT_CELLS - 1), LOOT_COUNT_CELLS)
     -- Each cell times its place, so swapped cells don't pass.
     local sum = 0
     for place, value in ipairs(payload) do
@@ -92,7 +104,6 @@ layout()
 show(STATE_IDLE)
 strip:RegisterEvent("DISPLAY_SIZE_CHANGED")
 strip:RegisterEvent("UI_SCALE_CHANGED")
-strip:SetScript("OnEvent", layout)
 
 local function fishingName()
     if C_Spell and C_Spell.GetSpellName then
@@ -179,12 +190,67 @@ local function trackMoves()
     wasMoving = moving
 end
 
+-- Looted items waiting for their turn on the strip.
+local lootQueue = {}
+local lootShownFor = LOOT_HOLD
+local lootRead = false
+
+-- The loot window fills for fishing loot only when IsFishingLoot says so; a client without it
+-- reports every loot. The game saves PececitoItems, which is how the app learns item names.
+local function readLoot()
+    if lootRead or not (GetNumLootItems and GetLootSlotLink) then
+        return
+    end
+    if IsFishingLoot and not IsFishingLoot() then
+        return
+    end
+    for slot = 1, GetNumLootItems() do
+        local link = GetLootSlotLink(slot)
+        local item = link and tonumber(link:match("item:(%d+)"))
+        if item then
+            local _, name, quantity = GetLootSlotInfo(slot)
+            PececitoItems = PececitoItems or {}
+            if name then
+                PececitoItems[item] = name
+            end
+            lootQueue[#lootQueue + 1] = { item = item, count = quantity or 1 }
+            lootRead = true
+        end
+    end
+end
+
+local function showNextLoot(elapsed)
+    lootShownFor = lootShownFor + elapsed
+    if #lootQueue > 0 and lootShownFor >= LOOT_HOLD then
+        local loot = table.remove(lootQueue, 1)
+        lootSerial = lootSerial + 1
+        lootItem = loot.item
+        lootCount = loot.count
+        lootShownFor = 0
+    end
+end
+
+-- Auto loot can close the window before LOOT_OPENED, so LOOT_READY is read too.
+strip:RegisterEvent("LOOT_READY")
+strip:RegisterEvent("LOOT_OPENED")
+strip:RegisterEvent("LOOT_CLOSED")
+strip:SetScript("OnEvent", function(_, event)
+    if event == "LOOT_READY" or event == "LOOT_OPENED" then
+        readLoot()
+    elseif event == "LOOT_CLOSED" then
+        lootRead = false
+    else
+        layout()
+    end
+end)
+
 local sinceUpdate = 0
 strip:SetScript("OnUpdate", function(_, elapsed)
     sinceUpdate = sinceUpdate + elapsed
     if sinceUpdate < UPDATE_INTERVAL then
         return
     end
+    showNextLoot(sinceUpdate)
     sinceUpdate = 0
     trackMoves()
     if isFishing() then

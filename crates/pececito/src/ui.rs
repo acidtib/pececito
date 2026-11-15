@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::OnceLock;
 
@@ -11,7 +12,7 @@ use rune_kit::{
 };
 
 use crate::{Fishing, Game, Screen, Session, State, StopReason};
-use fishing::{CAST_LENGTH, HookDelay, Outcome, PauseReason, Phase};
+use fishing::{CAST_LENGTH, HookDelay, Loot, Outcome, PauseReason, Phase};
 use game::{AddonMismatch, AddonState, Detection};
 
 /// Points square; the logo is rasterized at this size.
@@ -604,7 +605,10 @@ fn casts(state: &State, kit: &Kit) -> El {
     }
     let rows = history.iter().rev().take(RECENT_CASTS).map(|cast| {
         let (name, ink) = match cast.outcome {
-            Outcome::Hooked { after } => (format!("Hooked after {after:.1}s"), c.text_base),
+            Outcome::Hooked { after } if cast.loot.is_empty() => {
+                (format!("Hooked after {after:.1}s"), c.text_base)
+            }
+            Outcome::Hooked { .. } => (loot_names(&cast.loot, &state.item_names), c.text_base),
             Outcome::NoBite => ("No bite".to_string(), c.text_faint),
             Outcome::Missed => ("Missed the bite".to_string(), c.text_muted),
             Outcome::Interrupted => ("Cast ended early".to_string(), c.text_faint),
@@ -626,6 +630,26 @@ fn casts(state: &State, kit: &Kit) -> El {
         .gap(8.0)
         .child(section_label(kit, "Recent casts"))
         .child(list.children(rows))
+}
+
+/// What a hook caught, as "Oily Blackmouth x2, Firefin Snapper". An item the game hasn't saved a
+/// name for yet shows its id.
+fn loot_names(loot: &[Loot], names: &HashMap<u32, String>) -> String {
+    let items: Vec<String> = loot
+        .iter()
+        .map(|loot| {
+            let name = names
+                .get(&loot.item)
+                .cloned()
+                .unwrap_or_else(|| format!("Item {}", loot.item));
+            if loot.count > 1 {
+                format!("{name} x{}", loot.count)
+            } else {
+                name
+            }
+        })
+        .collect();
+    items.join(", ")
 }
 
 fn action_button(state: &State, kit: &Kit) -> El {
