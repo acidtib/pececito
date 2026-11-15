@@ -95,9 +95,20 @@ These apply to docs, UI text, commit messages, and replies to the user.
 * No meta-commentary ("the honest take is", "to be frank") and no apologetic tone.
 * Flag uncertainty instead of guessing, and don't describe unbuilt features as if they exist.
 
-### Commits
+### Commits and pull requests
 * Only commit when asked, and only after the work builds and is verified.
-* Imperative mood, capitalized, no trailing period: `Detect the WoW Forever window`.
+* Release Please builds the changelog and version from commit messages, so commit messages and PR
+  titles follow Conventional Commits: `type(scope): summary`. Squash merges use the PR title as
+  the commit message, so a PR title needs the format as much as a commit does.
+  * Types: `feat` (a user-visible feature, minor bump), `fix` (a user-visible bug fix, patch bump),
+    and `perf`, `refactor`, `docs`, `test`, `build`, `ci`, `chore` for the rest, which don't bump
+    the version.
+  * The scope is optional: a crate (`pececito`, `game`, `fishing`) or `addon`. Leave it out when a
+    change spans several.
+  * The summary is lowercase, imperative and has no trailing period:
+    `fix(game): find the audio stream after the game restarts`.
+  * Mark a breaking change with `!` after the type or scope (`feat(addon)!: ...`) and a
+    `BREAKING CHANGE:` footer saying what breaks.
 * Small commits, one idea each. Never commit secrets or `.env` files.
 * Use the body only for the why a future reader needs. No debugging narration.
 * No co-author trailers and no tool attribution: no `Co-authored-by`, `Generated with`, agent names, or
