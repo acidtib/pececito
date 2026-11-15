@@ -458,12 +458,12 @@ fn fishing_status(card: El, fishing: &Fishing, clock: f64, kit: &Kit) -> El {
             .child(row().child(resume));
     }
     let now = clock - fishing.started;
-    let waited = run.waited(now);
-    let progress = waited.map_or(0.0, |waited| (waited / CAST_LENGTH).clamp(0.0, 1.0) as f32);
+    let left = run
+        .waited(now)
+        .map(|waited| (CAST_LENGTH - waited).clamp(0.0, CAST_LENGTH));
+    let progress = left.map_or(0.0, |left| (left / CAST_LENGTH) as f32);
     let (headline, timer) = if fishing.has_focus {
-        let timer = waited.map_or(String::new(), |waited| {
-            format!("{:.1}s of {CAST_LENGTH:.0}s", waited.min(CAST_LENGTH))
-        });
+        let timer = left.map_or(String::new(), |left| format!("{left:.1}s"));
         (run.phase.headline(), timer)
     } else {
         ("Click the game window", "Paused".to_string())
