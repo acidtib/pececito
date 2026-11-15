@@ -122,12 +122,15 @@ impl Fishing<'_> {
                 signal_read = Instant::now();
                 // A minimized or partly off-screen window can't be read; it counts as the
                 // squares being gone, so the grace period applies.
-                let read = signal.read().unwrap_or_else(|error| {
-                    eprintln!("pececito: {error}");
-                    Signal::Missing
-                });
+                let result = signal.read();
+                let read = *result.as_ref().unwrap_or(&Signal::Missing);
                 match read {
                     Signal::Missing if signal_seen.elapsed() >= SIGNAL_GRACE => {
+                        if let Err(error) = result {
+                            return Err(format!(
+                                "Pececito can't see the game window. Keep it on screen and not minimized. ({error})"
+                            ));
+                        }
                         report(Report::AddonMissing);
                         return Ok(());
                     }

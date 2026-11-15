@@ -216,7 +216,7 @@ impl State {
 
     fn addon(&self) -> Option<AddonState> {
         match &self.game {
-            Game::Detected(Detection::Found(_, addon)) => Some(*addon),
+            Game::Detected(Detection::Found(_, addon)) => Some(addon.clone()),
             _ => None,
         }
     }
@@ -454,7 +454,7 @@ impl State {
         // The next scan says the same once it runs; the game shows it after /reload.
         if let Some(Ok(())) = installed
             && let Game::Detected(Detection::Found(_, addon)) = &mut self.game
-            && *addon == AddonState::NotInstalled
+            && matches!(addon, AddonState::NotInstalled | AddonState::Outdated)
         {
             *addon = AddonState::NotShowing;
         }

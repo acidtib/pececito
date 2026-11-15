@@ -60,16 +60,41 @@ pub fn install_addon(process: &GameProcess) -> Result<PathBuf, String> {
     Ok(folder)
 }
 
-/// Whether the addon is installed in the game's folder.
-pub fn addon_installed(process: &GameProcess) -> bool {
-    fs::read_link(format!("/proc/{}/cwd", process.pid)).is_ok_and(|game| addon_files_present(&game))
+/// The addon's files in the game's folder, against the ones this build installs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AddonFiles {
+    Missing,
+    /// All there, but not this build's: an older or newer release wrote them, or they were edited.
+    Different,
+    Current,
 }
 
-fn addon_files_present(game: &Path) -> bool {
+pub fn addon_files(process: &GameProcess) -> AddonFiles {
+    match fs::read_link(format!("/proc/{}/cwd", process.pid)) {
+        Ok(game) => addon_files_in(&game),
+        Err(_) => AddonFiles::Missing,
+    }
+}
+
+fn addon_files_in(game: &Path) -> AddonFiles {
     let folder = game.join("Interface").join("AddOns").join("Pececito");
-    ["Pececito.toc", "Pececito.lua", "Icon.png"]
-        .iter()
-        .all(|name| folder.join(name).is_file())
+    let files = [
+        ("Pececito.toc", TOC.as_bytes()),
+        ("Pececito.lua", LUA.as_bytes()),
+        ("Icon.png", ICON),
+    ];
+    let mut current = true;
+    for (name, expected) in files {
+        match fs::read(folder.join(name)) {
+            Ok(contents) => current &= contents == expected,
+            Err(_) => return AddonFiles::Missing,
+        }
+    }
+    if current {
+        AddonFiles::Current
+    } else {
+        AddonFiles::Different
+    }
 }
 
 /// Reads the addon's squares from the game window, keeping one X connection for repeated reads.
@@ -197,14 +222,17 @@ mod tests {
         let game = std::env::temp_dir().join(format!("pececito-game-{}", std::process::id()));
         let folder = game.join("Interface").join("AddOns").join("Pececito");
         fs::create_dir_all(&folder)?;
-        let before = addon_files_present(&game);
+        let before = addon_files_in(&game);
         fs::write(folder.join("Pececito.toc"), TOC)?;
-        fs::write(folder.join("Pececito.lua"), LUA)?;
+        fs::write(folder.join("Pececito.lua"), "-- an older release")?;
         fs::write(folder.join("Icon.png"), ICON)?;
-        let after = addon_files_present(&game);
+        let older = addon_files_in(&game);
+        fs::write(folder.join("Pececito.lua"), LUA)?;
+        let after = addon_files_in(&game);
         fs::remove_dir_all(&game)?;
-        assert!(!before);
-        assert!(after);
+        assert_eq!(before, AddonFiles::Missing);
+        assert_eq!(older, AddonFiles::Different);
+        assert_eq!(after, AddonFiles::Current);
         Ok(())
     }
 }

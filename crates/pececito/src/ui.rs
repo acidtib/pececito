@@ -336,6 +336,29 @@ fn status_card(state: &State, kit: &Kit) -> El {
                 .child(message("Install Pececito's addon", detail, color))
                 .child(row().child(install_button(state, kit)));
         }
+        Some(AddonState::Outdated) => {
+            let (detail, color) = match state.install_error() {
+                Some(error) => (format!("Couldn't update: {error}"), c.danger.fg),
+                None => (
+                    "The addon in the game isn't the one this version of Pececito reads. Update it, then type /reload in the game chat."
+                        .to_string(),
+                    c.text_muted,
+                ),
+            };
+            return card
+                .child(message("Update Pececito's addon", detail, color))
+                .child(row().child(install_button(state, kit)));
+        }
+        Some(AddonState::Unreadable(error)) => {
+            return card
+                .child(message(
+                    "Pececito can't see the game window",
+                    format!("Keep it on screen and not minimized. ({error})"),
+                    c.warning.fg,
+                ))
+                .child(el().grow(1.0))
+                .child(steps(None, kit));
+        }
         Some(AddonState::NotShowing) => {
             return card
                 .child(message(
@@ -985,8 +1008,17 @@ fn addon_setting(state: &State, kit: &Kit) -> El {
             "Not installed. The addon lets Pececito see when you're fishing.".to_string(),
             c.warning.fg,
         ),
+        (None, Some(AddonState::Outdated)) => (
+            "Installed, but not this version's. Update it, then type /reload in the game chat."
+                .to_string(),
+            c.warning.fg,
+        ),
         (None, Some(AddonState::NotShowing)) => (
             "Installed. Type /reload in the game chat to load it.".to_string(),
+            c.text_muted,
+        ),
+        (None, Some(AddonState::Unreadable(_))) => (
+            "Installed. Pececito can't see the game window to check that it's running.".to_string(),
             c.text_muted,
         ),
         (None, Some(AddonState::Showing | AddonState::NoPole)) => {
@@ -1004,7 +1036,13 @@ fn addon_setting(state: &State, kit: &Kit) -> El {
 fn install_button(state: &State, kit: &Kit) -> El {
     let label = match state.addon() {
         _ if state.is_installing() => "Installing",
-        Some(AddonState::NotShowing | AddonState::NoPole | AddonState::Showing) => "Reinstall",
+        Some(AddonState::Outdated) => "Update",
+        Some(
+            AddonState::NotShowing
+            | AddonState::Unreadable(_)
+            | AddonState::NoPole
+            | AddonState::Showing,
+        ) => "Reinstall",
         Some(AddonState::NotInstalled) | None => "Install",
     };
     Button::new(label)

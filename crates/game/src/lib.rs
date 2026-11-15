@@ -34,7 +34,7 @@ mod window;
 
 use std::path::Path;
 
-use addon::addon_installed;
+use addon::{AddonFiles, addon_files};
 pub use addon::{Signal, SignalReader, install_addon};
 pub use audio::{CHUNK_FRAMES, GameAudio, SAMPLE_RATE};
 pub use keyboard::{Keyboard, Keystroke};
@@ -66,9 +66,14 @@ pub struct GameWindow {
 }
 
 /// The Pececito addon, as seen in a running game.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AddonState {
     NotInstalled,
+    /// Installed, but not the files this build installs, so its squares may mean something else.
+    Outdated,
+    /// The game window can't be read, as when it's minimized or partly off-screen, so the
+    /// squares can't be looked for.
+    Unreadable(String),
     /// Installed, but its squares aren't on screen: the game hasn't loaded it since it was
     /// installed, or it's turned off.
     NotShowing,
@@ -95,19 +100,15 @@ pub fn detect() -> Result<Detection, String> {
     let Some(window) = window::find_window(&process)? else {
         return Ok(Detection::NoWindow(process));
     };
-    let addon = if addon_installed(&process) {
-        // A minimized or partly off-screen window can't be read; the squares count as hidden.
-        match SignalReader::new(&window).and_then(|reader| reader.read()) {
+    let addon = match addon_files(&process) {
+        AddonFiles::Missing => AddonState::NotInstalled,
+        AddonFiles::Different => AddonState::Outdated,
+        AddonFiles::Current => match SignalReader::new(&window).and_then(|reader| reader.read()) {
             Ok(Signal::Missing) => AddonState::NotShowing,
             Ok(Signal::NoPole) => AddonState::NoPole,
             Ok(Signal::Idle | Signal::Busy | Signal::Fishing) => AddonState::Showing,
-            Err(error) => {
-                eprintln!("pececito: {error}");
-                AddonState::NotShowing
-            }
-        }
-    } else {
-        AddonState::NotInstalled
+            Err(error) => AddonState::Unreadable(error),
+        },
     };
     Ok(Detection::Found(window, addon))
 }
