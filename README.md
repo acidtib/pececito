@@ -37,7 +37,12 @@ Settings are saved to `~/.config/pececito/prefs.json`.
 
 ## Download
 
-Each release on GitHub has a Linux build (`.tar.gz`) and a Windows build (`.zip`). The Windows build opens, but it can't find the game or press keys yet.
+Each release on GitHub has:
+
+* `pececito-linux-x86_64.tar.gz`: extract it into `~/.local` (`tar -xzf pececito-linux-x86_64.tar.gz --strip-components=1 -C ~/.local`) to install the app, its icon and its launcher entry. `~/.local/bin` needs to be on your `PATH` for the launcher entry to start it.
+* `Pececito-x86_64.exe`: the Windows installer. It installs for your user only, with a Start menu shortcut and an uninstaller. The Windows build opens, but it can't find the game or press keys yet.
+
+The newest build is always at `https://github.com/acidtib/pececito/releases/latest/download/<file name>`.
 
 ## Install from source
 

@@ -3,6 +3,8 @@ name: Release
 on:
   push:
     branches: [main]
+  # Builds the downloads as workflow artifacts without making a release, to test packaging.
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -13,6 +15,7 @@ env:
 
 jobs:
   release-please:
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     outputs:
       release_created: ${{ steps.release.outputs.release_created }}
@@ -25,9 +28,11 @@ jobs:
           manifest-file: .release-please-manifest.json
 
   build:
-    name: Build (${{ matrix.target }})
+    name: Build (${{ matrix.os }})
     needs: release-please
-    if: needs.release-please.outputs.release_created == 'true'
+    if: >-
+      always() &&
+      (needs.release-please.outputs.release_created == 'true' || github.event_name == 'workflow_dispatch')
     strategy:
       fail-fast: false
       matrix:
@@ -43,7 +48,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: ${{ needs.release-please.outputs.tag_name }}
+          ref: ${{ needs.release-please.outputs.tag_name || github.ref }}
 
       - name: Install Linux build dependencies
         if: runner.os == 'Linux'
@@ -59,29 +64,47 @@ jobs:
       - name: Build
         run: cargo build --release --locked -p pececito --target ${{ matrix.target }}
 
+      - name: Read the version
+        shell: bash
+        run: echo "VERSION=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)" >> "$GITHUB_ENV"
+
+      # Laid out like ~/.local, so extracting it there installs the app, its icon and its launcher entry.
       - name: Package for Linux
         if: runner.os == 'Linux'
-        shell: bash
         run: |
-          name="pececito-$TAG-${{ matrix.target }}"
-          mkdir -p "$name/assets"
-          cp "target/${{ matrix.target }}/release/pececito" "$name/"
-          cp -r assets/icon assets/pececito.desktop "$name/assets/"
-          cp README.md "$name/"
+          name="pececito-linux-x86_64"
+          install -Dm755 "target/${{ matrix.target }}/release/pececito" "$name/bin/pececito"
+          install -Dm644 assets/pececito.desktop "$name/share/applications/pececito.desktop"
+          install -Dm644 assets/icon/pececito.svg "$name/share/icons/hicolor/scalable/apps/pececito.svg"
+          for size in 16 24 32 48 64 128 256 512; do
+            install -Dm644 "assets/icon/png/pececito-$size.png" \
+              "$name/share/icons/hicolor/${size}x${size}/apps/pececito.png"
+          done
           tar -czf "$name.tar.gz" "$name"
-          echo "ARCHIVE=$name.tar.gz" >> "$GITHUB_ENV"
+          echo "DOWNLOAD=$name.tar.gz" >> "$GITHUB_ENV"
 
       - name: Package for Windows
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $name = "pececito-$env:TAG-${{ matrix.target }}"
-          New-Item -ItemType Directory -Path $name | Out-Null
-          Copy-Item "target/${{ matrix.target }}/release/pececito.exe" $name
-          Copy-Item README.md $name
-          Compress-Archive -Path $name -DestinationPath "$name.zip"
-          "ARCHIVE=$name.zip" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            choco install innosetup --no-progress -y
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          $exe = Resolve-Path "target/${{ matrix.target }}/release/pececito.exe"
+          & $iscc "/DVersion=$env:VERSION" "/DExePath=$exe" "/O$PWD" assets/windows/pececito.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "DOWNLOAD=Pececito-x86_64.exe" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: Upload to the release
+        if: env.TAG != ''
         shell: bash
-        run: gh release upload "$TAG" "$ARCHIVE" --clobber
+        run: gh release upload "$TAG" "$DOWNLOAD" --clobber
+
+      - name: Upload as a workflow artifact
+        if: env.TAG == ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.DOWNLOAD }}
+          path: ${{ env.DOWNLOAD }}
