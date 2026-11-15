@@ -13,6 +13,9 @@ use crate::{Fishing, Game, Screen, Session, State, StopReason};
 use fishing::{CAST_LENGTH, HookDelay, Outcome, PauseReason, Phase};
 use game::{AddonState, Detection};
 
+/// Points square; the logo is rasterized at this size.
+pub const LOGO_SIZE: f32 = 56.0;
+
 pub struct SessionLength {
     pub label: &'static str,
     /// None fishes until the user stops.
@@ -690,6 +693,35 @@ fn settings_screen(state: &State, kit: &Kit) -> El {
             "Config file",
             vec![config_file_setting(state, kit)],
         ))
+        .child(about(state, kit))
+}
+
+fn about(state: &State, kit: &Kit) -> El {
+    let c = &kit.c;
+    let logo = el().size(LOGO_SIZE, LOGO_SIZE);
+    let logo = match &state.logo {
+        Some(image) => logo.pixels(image.pixels()),
+        None => logo,
+    };
+    col()
+        .key("about")
+        .w_full()
+        .center_y()
+        .gap(4.0)
+        .pt(16.0)
+        .pb(8.0)
+        .child(logo.mb(8.0))
+        .child(text("Pececito").font(kit.ty.body_medium).color(c.text_base))
+        .child(
+            text(concat!("Version ", env!("CARGO_PKG_VERSION")))
+                .font(kit.ty.small)
+                .color(c.text_muted),
+        )
+        .child(
+            text("A fishing companion for WoW Forever.")
+                .font(kit.ty.small)
+                .color(c.text_faint),
+        )
 }
 
 fn config_file_setting(state: &State, kit: &Kit) -> El {

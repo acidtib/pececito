@@ -10,8 +10,8 @@ use std::time::Duration;
 
 use rune::prefs::{Prefs, PrefsError};
 use rune::{
-    AppSpec, Display, Key, KeyEvent, Mods, PhysicalKeyCode, Shortcut, Tx, Waker, WindowHandle,
-    WindowOptions, WindowSpec,
+    AppSpec, Display, Image, ImageCache, Key, KeyEvent, Mods, PhysicalKeyCode, Shortcut, Tx, Waker,
+    WindowHandle, WindowOptions, WindowSpec,
 };
 use rune_kit::ShortcutRecorderState;
 
@@ -21,6 +21,7 @@ use game::{AddonState, Detection, GameWindow, Keystroke, Watcher};
 use settings::Settings;
 
 const APP_ID: &str = "pececito";
+const LOGO_SVG: &[u8] = include_bytes!("../../../assets/icon/pececito.svg");
 const WINDOW_SIZE: (f32, f32) = (400.0, 600.0);
 const FISHING_KEY_PREF: &str = "fishing_key";
 const HOOK_DELAY_PREF: &str = "hook_delay";
@@ -170,6 +171,8 @@ struct State {
     waker: Option<Waker>,
     /// Pececito's own window, to save where it sits when it closes.
     app_window: Option<WindowHandle>,
+    /// The app icon for the About section, decoded off the UI thread.
+    logo: Option<Image>,
 }
 
 impl State {
@@ -197,6 +200,7 @@ impl State {
             open_config: Job::Idle,
             waker: None,
             app_window: None,
+            logo: None,
         }
     }
 
@@ -556,6 +560,8 @@ fn init() -> State {
 fn setup(state: &mut State, waker: Waker) {
     state.waker = Some(waker.clone());
     state.settings.set_waker(waker.clone());
+    // Rasterized at 2x so it stays sharp on HiDPI; smaller scales draw from its mips.
+    state.logo = Some(ImageCache::new(waker.clone()).svg(LOGO_SVG, ui::LOGO_SIZE, 2.0));
     state.watcher = Some(Watcher::start(move || waker()));
 }
 
