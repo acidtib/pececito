@@ -674,7 +674,7 @@ fn main() {
 mod tests {
     use super::*;
     use game::{GameProcess, Rect};
-    use rune::{Env, PhysicalInput, Runtime};
+    use rune::{Cursor, Env, PhysicalInput, Runtime};
 
     fn runtime_with(prefs: Prefs) -> Runtime<State> {
         let env = Env {
@@ -970,6 +970,26 @@ mod tests {
             poll(state, started + 5.0 * 60.0, tx);
         });
         assert_eq!(stop_reason(&runtime), Some(StopReason::TimeUp("5 min")));
+    }
+
+    #[test]
+    fn clickable_controls_show_the_hand_cursor() {
+        let mut runtime = runtime();
+        let cursor_over = |runtime: &mut Runtime<State>, key: &str| {
+            let Some((x, y)) = runtime.find(key) else {
+                panic!("no element keyed {key}");
+            };
+            runtime.pointer_move(x, y);
+            runtime.frame(0.1);
+            runtime.cursor()
+        };
+        assert_eq!(cursor_over(&mut runtime, "settings"), Cursor::Pointer);
+        assert_eq!(
+            cursor_over(&mut runtime, "fish-for-button"),
+            Cursor::Pointer
+        );
+        // Nothing to reset before a session, so it keeps the arrow.
+        assert_eq!(cursor_over(&mut runtime, "reset"), Cursor::Default);
     }
 
     #[test]

@@ -2,7 +2,8 @@ use std::path::Path;
 use std::sync::OnceLock;
 
 use rune::{
-    Color, Cx, Drag, El, Icon, Phase as DragPhase, ScrollSpec, TextStyle, Tx, col, el, row, text,
+    Color, Cursor, Cx, Drag, El, Icon, Phase as DragPhase, ScrollSpec, TextStyle, Tx, col, el, row,
+    text,
 };
 use rune_kit::{
     Button, ButtonVariant, ControlSize, IconButton, IconButtonVariant, Kit, Placement,
@@ -139,6 +140,21 @@ fn toolbar(kit: &Kit) -> El {
         .fill(kit.c.bg_base)
 }
 
+/// Shows the hand cursor over a control while it's clickable; rune-kit keeps the arrow.
+trait Clickable {
+    fn pointer(self, enabled: bool) -> Self;
+}
+
+impl Clickable for El {
+    fn pointer(self, enabled: bool) -> El {
+        if enabled {
+            self.cursor(Cursor::Pointer)
+        } else {
+            self
+        }
+    }
+}
+
 fn panel(kit: &Kit) -> El {
     col()
         .w_full()
@@ -188,6 +204,7 @@ fn main_toolbar(state: &State, kit: &Kit) -> El {
         .disabled(!matches!(state.session, Session::Stopped(_)))
         .on_press(State::reset_session)
         .build(kit)
+        .pointer(matches!(state.session, Session::Stopped(_)))
         .key("reset")
         .help(reset_help);
     let settings = IconButton::new(&GEAR)
@@ -195,6 +212,7 @@ fn main_toolbar(state: &State, kit: &Kit) -> El {
         .label("Settings")
         .on_press(State::open_settings)
         .build(kit)
+        .pointer(true)
         .key("settings")
         .help("Settings");
     toolbar(kit)
@@ -292,6 +310,7 @@ fn status_card(state: &State, kit: &Kit) -> El {
             .variant(ButtonVariant::Neutral)
             .on_press(State::open_settings)
             .build(kit)
+            .pointer(true)
             .key("open-settings")
     };
     if state.fishing_key.shortcut().is_none() {
@@ -397,6 +416,7 @@ fn fishing_status(card: El, fishing: &Fishing, clock: f64, kit: &Kit) -> El {
             .variant(ButtonVariant::Neutral)
             .on_press(State::resume)
             .build(kit)
+            .pointer(true)
             .key("resume");
         return card
             .child(
@@ -574,6 +594,7 @@ fn action_button(state: &State, kit: &Kit) -> El {
             .control_size(ControlSize::ExtraLarge)
             .on_press(State::stop)
             .build(kit)
+            .pointer(true)
             .key("stop"),
         Session::Idle | Session::Stopped(_) => Button::new("Start fishing")
             .variant(ButtonVariant::Submit)
@@ -581,6 +602,7 @@ fn action_button(state: &State, kit: &Kit) -> El {
             .disabled(!state.can_fish())
             .on_press_tx(State::start)
             .build(kit)
+            .pointer(state.can_fish())
             .key("fish"),
     }
 }
@@ -593,6 +615,7 @@ fn fish_for_button(state: &State, kit: &Kit, layer: &mut Vec<El>) -> El {
         .control_size(ControlSize::ExtraLarge)
         .on_press(State::toggle_fish_for)
         .build(kit)
+        .pointer(true)
         .key("fish-for-button")
         .w(FISH_FOR_BUTTON_WIDTH)
         .help("How long to fish")
@@ -649,6 +672,7 @@ fn settings_toolbar(kit: &Kit) -> El {
         .label("Back")
         .on_press(State::close_settings)
         .build(kit)
+        .pointer(true)
         .key("back");
     toolbar(kit).child(back).child(
         text("Settings")
@@ -685,6 +709,7 @@ fn settings_screen(state: &State, kit: &Kit) -> El {
                 .width(None)
                 .on_pick(|state: &mut State, index, _tx| state.pick_hook_delay(index))
                 .build(kit)
+                .pointer(true)
                 .key("hook-delay"),
             )],
         ))
@@ -745,6 +770,7 @@ fn config_file_setting(state: &State, kit: &Kit) -> El {
         .disabled(path.is_none())
         .on_press(State::open_config_file)
         .build(kit)
+        .pointer(path.is_some())
         .key("open-config");
     col()
         .w_full()
@@ -807,6 +833,7 @@ fn fish_for_slider(state: &State, kit: &Kit, width: f32) -> El {
             state.pick_fish_for(if end { FISH_FOR.len() - 1 } else { 0 })
         })
         .size(width, KNOB)
+        .pointer(true)
         .motion(rune::tok::motion::SNAPPY)
         .on_drag(
             move |state: &mut State, drag: &mut Drag, _tx| match drag.phase {
@@ -931,7 +958,8 @@ fn fishing_key_setting(state: &State, kit: &Kit) -> El {
         state.save_fishing_key(shortcut);
         Ok(())
     })
-    .build(kit);
+    .build(kit)
+    .pointer(!state.is_fishing());
     let (description, color) = match state.fishing_key.shortcut() {
         None => ("Set a key to start fishing.".to_string(), c.warning.fg),
         Some(_) if state.is_fishing() => ("Stop fishing to change it.".to_string(), c.text_muted),
@@ -984,5 +1012,6 @@ fn install_button(state: &State, kit: &Kit) -> El {
         .disabled(state.window().is_none() || state.is_installing())
         .on_press(State::install_addon)
         .build(kit)
+        .pointer(state.window().is_some() && !state.is_installing())
         .key("install-addon")
 }
