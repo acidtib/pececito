@@ -31,4 +31,23 @@ if command -v kbuildsycoca6 >/dev/null; then
   kbuildsycoca6 --noincremental >/dev/null 2>&1 || echo "install-linux: KDE menu cache not refreshed" >&2
 fi
 
+# Wayland keeps window positions from apps, so on KDE a window rule has KWin remember Pececito's.
+if command -v kwriteconfig6 >/dev/null && command -v kreadconfig6 >/dev/null; then
+  rule="pececito-position"
+  rules="$(kreadconfig6 --file kwinrulesrc --group General --key rules)"
+  case ",$rules," in
+    *",$rule,"*) ;;
+    *) rules="${rules:+$rules,}$rule" ;;
+  esac
+  kwriteconfig6 --file kwinrulesrc --group "$rule" --key Description "Pececito: remember position"
+  kwriteconfig6 --file kwinrulesrc --group "$rule" --key wmclass "pececito"
+  kwriteconfig6 --file kwinrulesrc --group "$rule" --key wmclassmatch 1
+  kwriteconfig6 --file kwinrulesrc --group "$rule" --key positionrule 4
+  kwriteconfig6 --file kwinrulesrc --group General --key rules "$rules"
+  kwriteconfig6 --file kwinrulesrc --group General --key count "$(tr ',' '\n' <<<"$rules" | grep -c .)"
+  if command -v qdbus6 >/dev/null; then
+    qdbus6 org.kde.KWin /KWin reconfigure >/dev/null 2>&1 || echo "install-linux: KWin rules not reloaded" >&2
+  fi
+fi
+
 echo "Installed pececito to $prefix/bin/pececito."
