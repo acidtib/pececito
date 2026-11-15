@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/acidtib/pececito/compare/v0.2.0...v0.3.0) (2026-11-15)
+
+
+### Features
+
+* install the latest linux release with a curl script ([6268f56](https://github.com/acidtib/pececito/commit/6268f564c946d1721ef97ff8b6039241ca324269))
+
 ## [0.2.0](https://github.com/acidtib/pececito/compare/v0.1.0...v0.2.0) (2026-11-15)
 
 
