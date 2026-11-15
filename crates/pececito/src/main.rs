@@ -509,14 +509,21 @@ fn open_file(path: &Path) -> Result<(), String> {
         }
         Err(error) => return Err(format!("Can't read {}: {error}", path.display())),
     }
-    let status = Command::new("xdg-open")
+    // `start` takes its first quoted argument as a window title, so it gets an empty one.
+    let (program, arguments): (&str, &[&str]) = if cfg!(target_os = "windows") {
+        ("cmd", &["/C", "start", ""])
+    } else {
+        ("xdg-open", &[])
+    };
+    let status = Command::new(program)
+        .args(arguments)
         .arg(path)
         .status()
-        .map_err(|error| format!("Can't run xdg-open: {error}"))?;
+        .map_err(|error| format!("Can't run {program}: {error}"))?;
     if status.success() {
         Ok(())
     } else {
-        Err(format!("xdg-open couldn't open it ({status})."))
+        Err(format!("{program} couldn't open it ({status})."))
     }
 }
 

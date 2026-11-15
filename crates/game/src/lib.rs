@@ -86,6 +86,9 @@ pub enum Detection {
 }
 
 pub fn detect() -> Result<Detection, String> {
+    if cfg!(not(target_os = "linux")) {
+        return Err("Finding the game isn't supported on this system yet".into());
+    }
     let Some(process) = process::find_process(Path::new("/proc"))? else {
         return Ok(Detection::NotRunning);
     };
