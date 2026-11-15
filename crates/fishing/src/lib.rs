@@ -259,6 +259,8 @@ pub struct Run {
     channel_seen_off: bool,
     /// Whether `cast_started` is when the cast in progress really started.
     cast_start_known: bool,
+    /// When the fishing channel that is running was first seen.
+    channel_started: Option<f64>,
     /// What was heard over the last `SPLASH_WINDOW`, oldest first.
     recent: VecDeque<(f64, Level)>,
 }
@@ -277,6 +279,7 @@ impl Run {
             not_before: now,
             channel_seen_off: false,
             cast_start_known: true,
+            channel_started: None,
             recent: VecDeque::new(),
         }
     }
@@ -342,14 +345,25 @@ impl Run {
     /// Takes in what the game shows the player doing.
     pub fn see(&mut self, now: f64, activity: Activity) {
         let fishing = activity == Activity::Fishing;
+        let channel_started = match self.channel_started {
+            _ if !fishing => None,
+            None => Some(now),
+            started => started,
+        };
+        self.channel_started = channel_started;
+        // A channel older than the phase is the last cast's: a missed bite leaves it running, and
+        // a hook shows it a moment longer.
+        let new_channel = channel_started.filter(|started| *started >= self.phase_started);
         match self.phase {
             Phase::Casting if fishing => {
                 self.cast_start_known = true;
                 self.enter(Phase::Waiting, now);
             }
             // A cast made by hand, paused or not, is followed like one of ours.
-            Phase::Ready | Phase::Busy | Phase::Paused(_) if fishing => {
-                self.cast_started = now;
+            Phase::Ready | Phase::Busy | Phase::Paused(_) | Phase::Looting
+                if new_channel.is_some() =>
+            {
+                self.cast_started = new_channel.unwrap_or(now);
                 self.cast_start_known = self.channel_seen_off;
                 self.enter(Phase::Waiting, now);
             }
@@ -737,6 +751,60 @@ mod tests {
         play(&mut run, now, FRAME, quiet(), Activity::Idle);
         assert_eq!(run.phase, Phase::Ready);
         assert_eq!(last_outcome(&run), Some(Outcome::Missed));
+    }
+
+    #[test]
+    fn a_bite_missed_without_focus_recasts_over_the_old_channel() {
+        let mut run = Run::new(0.0, HookDelay::Medium, 7);
+        let now = cast(&mut run, 0.0);
+        let now = play(&mut run, now, 5.0, quiet(), Activity::Fishing);
+        let now = play(&mut run, now, 0.2, splash(), Activity::Fishing);
+        assert_eq!(run.phase, Phase::Hooking);
+
+        let now = play(&mut run, now, HOOK_WINDOW + 1.0, quiet(), Activity::Fishing);
+        assert_eq!(run.phase, Phase::Ready, "the old channel isn't a new cast");
+        assert_eq!(last_outcome(&run), Some(Outcome::Missed));
+        assert_eq!(run.casts(), 1);
+
+        assert!(run.key_due(now));
+        run.key_pressed(now);
+        let now = play(&mut run, now, FRAME, quiet(), Activity::Fishing);
+        assert_eq!(run.phase, Phase::Waiting);
+        assert_eq!(run.casts(), 2);
+        play(&mut run, now, CAST_LENGTH, quiet(), Activity::Fishing);
+        assert_eq!(
+            run.history.len(),
+            1,
+            "no second outcome for the missed cast"
+        );
+    }
+
+    #[test]
+    fn a_cast_made_by_hand_while_looting_is_followed() {
+        let mut run = Run::new(0.0, HookDelay::Medium, 7);
+        let now = cast(&mut run, 0.0);
+        let now = play(&mut run, now, 3.0, quiet(), Activity::Fishing);
+        let now = play(&mut run, now, 0.2, splash(), Activity::Fishing);
+        let now = play(
+            &mut run,
+            now,
+            HookDelay::Medium.range().1,
+            splash(),
+            Activity::Fishing,
+        );
+        run.key_pressed(now);
+        let now = play(&mut run, now, 0.2, quiet(), Activity::Fishing);
+        assert_eq!(
+            run.phase,
+            Phase::Looting,
+            "the hooked channel shows a moment"
+        );
+
+        let now = play(&mut run, now, 0.5, quiet(), Activity::Idle);
+        let now = play(&mut run, now, LOOT_TIME, quiet(), Activity::Fishing);
+        assert_eq!(run.phase, Phase::Waiting);
+        assert!(!run.key_due(now), "pressing now would reel the line in");
+        assert_eq!(run.casts(), 2);
     }
 
     #[test]
