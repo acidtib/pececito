@@ -180,9 +180,21 @@ fn item_names_in(game: &Path) -> HashMap<u32, String> {
 
 /// The items fishing can give, so a catch has a name before the game first saves it.
 fn known_fishing_loot() -> impl Iterator<Item = (u32, String)> {
+    fishing_loot().map(|(item, name, _)| (item, name.to_string()))
+}
+
+/// The Wowhead icon name of each item fishing can give, by item id.
+pub fn fishing_loot_icons() -> impl Iterator<Item = (u32, &'static str)> {
+    fishing_loot().filter_map(|(item, _, icon)| Some((item, icon?)))
+}
+
+/// Each listed item's id, name and icon name, if it has one.
+fn fishing_loot() -> impl Iterator<Item = (u32, &'static str, Option<&'static str>)> {
     FISHING_LOOT.lines().filter_map(|line| {
-        let (item, name) = line.split_once('\t')?;
-        Some((item.parse().ok()?, name.to_string()))
+        let mut fields = line.split('\t');
+        let item = fields.next()?.parse().ok()?;
+        let name = fields.next()?;
+        Some((item, name, fields.next().filter(|icon| !icon.is_empty())))
     })
 }
 
@@ -511,6 +523,13 @@ mod tests {
             names.get(&6522).map(String::as_str),
             Some("Deviate \"Fish\"")
         );
+    }
+
+    #[test]
+    fn every_listed_item_has_an_icon() {
+        let icons: HashMap<u32, &str> = fishing_loot_icons().collect();
+        assert_eq!(icons.len(), known_fishing_loot().count());
+        assert_eq!(icons.get(&118), Some(&"inv_potion_49"));
     }
 
     #[test]
