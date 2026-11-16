@@ -266,6 +266,64 @@ pub struct Loot {
     pub count: u32,
 }
 
+/// What a session caught, item by item.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Haul {
+    pub latest: Option<Latest>,
+    /// Every item but the latest, most caught first; a tie puts the more recent catch first.
+    pub rest: Vec<Loot>,
+    /// How many items the session caught, all kinds together.
+    pub total: u32,
+}
+
+/// The item the newest catch brought in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Latest {
+    pub item: u32,
+    /// How many came in that catch.
+    pub caught: u32,
+    /// How many the session caught.
+    pub total: u32,
+}
+
+impl Haul {
+    pub fn new(history: &[Cast]) -> Self {
+        // Each item's loot so far and the index of the cast that last caught it.
+        let mut items: Vec<(Loot, usize)> = Vec::new();
+        for (index, cast) in history.iter().enumerate() {
+            for loot in &cast.loot {
+                match items.iter_mut().find(|(seen, _)| seen.item == loot.item) {
+                    Some((seen, last)) => {
+                        seen.count += loot.count;
+                        *last = index;
+                    }
+                    None => items.push((*loot, index)),
+                }
+            }
+        }
+        let total = items.iter().map(|(loot, _)| loot.count).sum();
+        let latest = history
+            .iter()
+            .rev()
+            .find_map(|cast| cast.loot.first())
+            .map(|newest| Latest {
+                item: newest.item,
+                caught: newest.count,
+                total: items
+                    .iter()
+                    .find(|(loot, _)| loot.item == newest.item)
+                    .map_or(newest.count, |(loot, _)| loot.count),
+            });
+        items.retain(|(loot, _)| latest.is_none_or(|latest| latest.item != loot.item));
+        items.sort_by(|(a, a_last), (b, b_last)| b.count.cmp(&a.count).then(b_last.cmp(a_last)));
+        Haul {
+            latest,
+            rest: items.into_iter().map(|(loot, _)| loot).collect(),
+            total,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Run {
     pub phase: Phase,
@@ -616,6 +674,54 @@ mod tests {
         play(&mut run, now, LOOT_TIME + FRAME, quiet(), Activity::Idle);
         assert_eq!(run.phase, Phase::Ready);
         assert_eq!(run.casts(), 1);
+    }
+
+    fn caught(at: f64, loot: &[(u32, u32)]) -> Cast {
+        Cast {
+            outcome: Outcome::Hooked { after: 5.0 },
+            at,
+            loot: loot
+                .iter()
+                .map(|&(item, count)| Loot { item, count })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn the_haul_counts_each_item_and_keeps_the_newest_apart() {
+        let history = [
+            caught(0.0, &[(6289, 1)]),
+            caught(20.0, &[(6291, 1), (6358, 2)]),
+            caught(40.0, &[(6289, 1)]),
+            caught(60.0, &[(7973, 1)]),
+            Cast {
+                outcome: Outcome::NoBite,
+                at: 80.0,
+                loot: Vec::new(),
+            },
+            caught(100.0, &[(6291, 1)]),
+        ];
+        let haul = Haul::new(&history);
+        assert_eq!(
+            haul.latest,
+            Some(Latest {
+                item: 6291,
+                caught: 1,
+                total: 2
+            })
+        );
+        let rest: Vec<_> = haul
+            .rest
+            .iter()
+            .map(|loot| (loot.item, loot.count))
+            .collect();
+        assert_eq!(
+            rest,
+            [(6289, 2), (6358, 2), (7973, 1)],
+            "a tie puts the newer first"
+        );
+        assert_eq!(haul.total, 7);
+        assert_eq!(Haul::new(&history[4..5]), Haul::default());
     }
 
     #[test]

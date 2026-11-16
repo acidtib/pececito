@@ -9,7 +9,6 @@ edition = "2024"
 publish = false
 
 [workspace.dependencies]
-chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 evdev = "0.13"
 fishing = { path = "crates/fishing" }
 game = { path = "crates/game" }
