@@ -4,6 +4,7 @@ use std::path::Path;
 use std::rc::Rc;
 use std::sync::OnceLock;
 
+use chrono::{DateTime, Local, TimeDelta, Timelike};
 use rune::{
     Color, Cursor, Cx, Drag, El, GrowthSpec, Icon, Phase as DragPhase, ScrollPos, ScrollSpec,
     TextStyle, Tx, col, el, row, text,
@@ -176,14 +177,30 @@ fn section_label(kit: &Kit, label: &'static str) -> El {
         .color(kit.c.text_faint)
 }
 
-/// "4:05", or "1:02:05" from an hour on.
+/// How long a session ran: "4:05", or "27h 46m" from an hour on.
 fn elapsed(seconds: f64) -> String {
     let whole = seconds.max(0.0) as u64;
     let (hours, minutes, seconds) = (whole / 3600, whole / 60 % 60, whole % 60);
     if hours > 0 {
-        format!("{hours}:{minutes:02}:{seconds:02}")
+        format!("{hours}h {minutes:02}m")
     } else {
         format!("{minutes}:{seconds:02}")
+    }
+}
+
+/// A time of day on a 12-hour clock, as "3:42 PM".
+fn clock_time(time: impl Timelike) -> String {
+    let (afternoon, hour) = time.hour12();
+    let half = if afternoon { "PM" } else { "AM" };
+    format!("{hour}:{:02} {half}", time.minute())
+}
+
+/// When the session in view started on the wall clock.
+fn session_started_at(state: &State) -> Option<DateTime<Local>> {
+    match &state.session {
+        Session::Fishing(fishing) => Some(fishing.started_at),
+        Session::Stopped(finished) => Some(finished.started_at),
+        Session::Idle => None,
     }
 }
 
@@ -665,6 +682,9 @@ fn cast_row(state: &State, kit: &Kit, index: usize) -> El {
     let Some(cast) = session_history(state).get(index) else {
         return el();
     };
+    let cast_time = session_started_at(state)
+        .map(|started| clock_time(started + TimeDelta::milliseconds((cast.at * 1000.0) as i64)))
+        .unwrap_or_default();
     let (name, ink) = match cast.outcome {
         Outcome::Hooked { after } if cast.loot.is_empty() => {
             (format!("Hooked after {after:.1}s"), c.text_base)
@@ -680,7 +700,7 @@ fn cast_row(state: &State, kit: &Kit, index: usize) -> El {
         .gap(12.0)
         .center_y()
         .child(text(name).font(kit.ty.ui).color(ink).grow(1.0).shrink())
-        .child(text(elapsed(cast.at)).font(TABULAR).color(c.text_faint))
+        .child(text(cast_time).font(TABULAR).color(c.text_faint))
 }
 
 /// What a hook caught, as "Oily Blackmouth x2, Firefin Snapper". An item the game hasn't saved a
@@ -1227,14 +1247,24 @@ fn install_button(state: &State, kit: &Kit) -> El {
 
 #[cfg(test)]
 mod tests {
-    use super::elapsed;
+    use super::{clock_time, elapsed};
+    use chrono::NaiveTime;
 
     #[test]
     fn elapsed_adds_hours_from_an_hour_on() {
         assert_eq!(elapsed(0.0), "0:00");
         assert_eq!(elapsed(245.9), "4:05");
         assert_eq!(elapsed(3599.0), "59:59");
-        assert_eq!(elapsed(3600.0), "1:00:00");
-        assert_eq!(elapsed(99_980.0), "27:46:20");
+        assert_eq!(elapsed(3600.0), "1h 00m");
+        assert_eq!(elapsed(99_980.0), "27h 46m");
+    }
+
+    #[test]
+    fn clock_time_reads_on_a_12_hour_clock() {
+        let at = |hour, minute| NaiveTime::from_hms_opt(hour, minute, 30).map(clock_time);
+        assert_eq!(at(0, 5).as_deref(), Some("12:05 AM"));
+        assert_eq!(at(9, 41).as_deref(), Some("9:41 AM"));
+        assert_eq!(at(12, 0).as_deref(), Some("12:00 PM"));
+        assert_eq!(at(15, 42).as_deref(), Some("3:42 PM"));
     }
 }

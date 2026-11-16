@@ -12,6 +12,7 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
 use std::time::Duration;
 
+use chrono::{DateTime, Local};
 use rune::prefs::{Prefs, PrefsError};
 use rune::{
     AppSpec, Display, Image, ImageCache, Key, KeyEvent, Live, Mods, PhysicalKeyCode, Shortcut, Tx,
@@ -70,6 +71,8 @@ enum FishForPicker {
 struct Fishing {
     /// App clock time the session started; the run's times count from here.
     started: f64,
+    /// When the session started on the wall clock, for the times the casts list shows.
+    started_at: DateTime<Local>,
     run: Run,
     has_focus: bool,
 }
@@ -141,6 +144,7 @@ impl Job {
 #[derive(Clone, Debug, PartialEq)]
 struct Finished {
     run: Run,
+    started_at: DateTime<Local>,
     duration: f64,
     reason: StopReason,
 }
@@ -293,6 +297,7 @@ impl State {
             Err(error) => {
                 self.session = Session::Stopped(Finished {
                     run: Run::new(0.0, self.hook_delay, 0),
+                    started_at: Local::now(),
                     duration: 0.0,
                     reason: StopReason::Failed(error),
                 });
@@ -309,6 +314,7 @@ impl State {
         }
         self.session = Session::Fishing(Fishing {
             started: self.clock,
+            started_at: Local::now(),
             run: Run::new(0.0, self.hook_delay, 0),
             has_focus: true,
         });
@@ -342,6 +348,7 @@ impl State {
         if let Session::Fishing(fishing) = std::mem::take(&mut self.session) {
             self.session = Session::Stopped(Finished {
                 run: fishing.run,
+                started_at: fishing.started_at,
                 duration: self.clock - fishing.started,
                 reason,
             });
@@ -955,6 +962,7 @@ mod tests {
         runtime.update(|state, _tx| {
             state.session = Session::Stopped(Finished {
                 run: Run::new(0.0, state.hook_delay, 0),
+                started_at: Local::now(),
                 duration: 600.0,
                 reason: StopReason::Stopped,
             });
