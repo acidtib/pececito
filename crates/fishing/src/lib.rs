@@ -327,6 +327,11 @@ impl Run {
         matches!(self.phase, Phase::Casting | Phase::Waiting).then(|| now - self.cast_started)
     }
 
+    /// Whether a cast's bobber is in the water, so a key press would reel it in.
+    pub fn bobber_out(&self) -> bool {
+        matches!(self.phase, Phase::Waiting | Phase::Hooking)
+    }
+
     /// Whether the fishing key should be pressed now.
     pub fn key_due(&self, now: f64) -> bool {
         // The focus wait holds back casting only; a hook can't wait that long.
@@ -611,6 +616,20 @@ mod tests {
         play(&mut run, now, LOOT_TIME + FRAME, quiet(), Activity::Idle);
         assert_eq!(run.phase, Phase::Ready);
         assert_eq!(run.casts(), 1);
+    }
+
+    #[test]
+    fn the_bobber_is_out_from_the_channel_to_the_hook() {
+        let mut run = Run::new(0.0, HookDelay::Medium, 7);
+        assert!(!run.bobber_out());
+        let now = cast(&mut run, 0.0);
+        let now = play(&mut run, now, 3.0, quiet(), Activity::Fishing);
+        assert!(run.bobber_out());
+        let now = play(&mut run, now, 0.2, splash(), Activity::Fishing);
+        assert_eq!(run.phase, Phase::Hooking);
+        assert!(run.bobber_out());
+        run.key_pressed(now);
+        assert!(!run.bobber_out(), "hooked and looting");
     }
 
     #[test]

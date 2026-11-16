@@ -5,7 +5,7 @@
 -- The app reads the same layout, so change both together and give the addon a new version.
 
 -- The "## Version" in Pececito.toc.
-local VERSION = 3
+local VERSION = 4
 local MAGENTA = 5
 local CYAN = 3
 local VERSION_CELLS = 2
@@ -267,10 +267,12 @@ end
 strip:RegisterEvent("LOOT_READY")
 strip:RegisterEvent("LOOT_OPENED")
 strip:RegisterEvent("LOOT_CLOSED")
+-- A new cast means the last loot is over, even if LOOT_CLOSED never came.
+strip:RegisterUnitEvent("UNIT_SPELLCAST_CHANNEL_START", "player")
 strip:SetScript("OnEvent", function(_, event)
     if event == "LOOT_READY" or event == "LOOT_OPENED" then
         readLoot()
-    elseif event == "LOOT_CLOSED" then
+    elseif event == "LOOT_CLOSED" or event == "UNIT_SPELLCAST_CHANNEL_START" then
         lootRead = false
     else
         layout()

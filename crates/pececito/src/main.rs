@@ -385,19 +385,30 @@ impl State {
         }
     }
 
-    /// Ends the session once it has run as long as settings allow.
-    fn check_time_limit(&mut self) {
+    /// Ends the session once it has run as long as settings allow; returns whether it did.
+    fn check_time_limit(&mut self) -> bool {
         let Session::Fishing(fishing) = &self.session else {
-            return;
+            return false;
         };
         let limit = ui::FISH_FOR
             .get(self.fish_for)
             .and_then(|length| length.minutes.map(|minutes| (length.label, minutes)));
-        if let Some((label, minutes)) = limit
-            && self.clock - fishing.started >= minutes as f64 * 60.0
-        {
-            self.end(StopReason::TimeUp(label));
+        let Some((label, minutes)) = limit else {
+            return false;
+        };
+        let length = minutes as f64 * 60.0;
+        if self.clock - fishing.started < length {
+            return false;
         }
+        if let Some(angler) = self.angler.take() {
+            angler.reel_in();
+        }
+        self.end(StopReason::TimeUp(label));
+        // Polls land a little past the limit; the session ran as long as it was set to.
+        if let Session::Stopped(finished) = &mut self.session {
+            finished.duration = length;
+        }
+        true
     }
 
     fn open_settings(&mut self) {
@@ -665,7 +676,7 @@ fn poll(state: &mut State, time: f64, tx: &mut Tx) -> bool {
     }
     changed |= state.finish_jobs();
     changed |= state.finish_saves();
-    state.check_time_limit();
+    changed |= state.check_time_limit();
     state.follow_new_casts(tx);
     if state.is_fishing() {
         tx.wake_after(SESSION_REFRESH);
@@ -1148,10 +1159,19 @@ mod tests {
             poll(state, started + 4.0 * 60.0, tx);
         });
         assert!(runtime.state.is_fishing());
+        let mut redrew = false;
         runtime.update(|state, tx| {
-            poll(state, started + 5.0 * 60.0, tx);
+            redrew = poll(state, started + 5.0 * 60.0 + 0.08, tx);
         });
+        assert!(redrew, "the screen has to show the session ended");
         assert_eq!(stop_reason(&runtime), Some(StopReason::TimeUp("5 min")));
+        let Session::Stopped(finished) = &runtime.state.session else {
+            panic!(
+                "expected a stopped session, got {:?}",
+                runtime.state.session
+            )
+        };
+        assert_eq!(finished.duration, 5.0 * 60.0);
     }
 
     #[test]

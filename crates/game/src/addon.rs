@@ -633,7 +633,7 @@ mod tests {
             });
         assert_eq!(
             (addon_version(), fingerprint),
-            (Some(3), 228_380_836_715_015_028)
+            (Some(4), 7_903_933_209_488_971_029)
         );
     }
 }

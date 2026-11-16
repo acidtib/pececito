@@ -3,7 +3,7 @@ use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use fishing::{Activity, HookDelay, Level, Loot, Run};
+use fishing::{Activity, CAST_LENGTH, HookDelay, Level, Loot, Phase, Run};
 use game::{FocusReader, GameAudio, GameWindow, Keyboard, Keystroke, PlayerState, SignalReader};
 
 /// The longest the loop goes without a tick when the game sends no sound.
@@ -14,6 +14,8 @@ const FOCUS_CHECK: Duration = Duration::from_secs(1);
 const SIGNAL_CHECK: Duration = Duration::from_millis(100);
 /// How long the addon's squares may be gone, as during a loading screen, before fishing stops.
 const SIGNAL_GRACE: Duration = Duration::from_secs(2);
+/// After a press to reel in, how long the cast may keep going before the key is pressed again.
+const REEL_RETRY: Duration = Duration::from_secs(2);
 
 #[derive(Debug)]
 pub enum Report {
@@ -31,10 +33,19 @@ pub enum Report {
 enum Command {
     /// Pick up again after a pause.
     Resume,
+    /// Reel in the line if one is out, then stop.
+    ReelIn,
 }
 
-/// Fishes on its own thread: listens to the game and presses the fishing key until dropped.
-/// The thread stops within a tick and cleans up after itself, so dropping doesn't wait for it.
+/// Reeling in at the end of a session.
+struct Reeling {
+    since: Instant,
+    pressed: Option<Instant>,
+}
+
+/// Fishes on its own thread: listens to the game and presses the fishing key until dropped or
+/// `reel_in` is called. The thread stops within a tick and cleans up after itself, so neither
+/// waits for it.
 pub struct Angler {
     /// Dropping it is also what tells the thread to stop.
     commands: Sender<Command>,
@@ -75,6 +86,13 @@ impl Angler {
         }
     }
 
+    /// Stops fishing, reeling in first if a line is out or a cast is starting.
+    pub fn reel_in(self) {
+        if self.commands.send(Command::ReelIn).is_err() {
+            eprintln!("pececito: can't reel in, the fishing thread already ended");
+        }
+    }
+
     /// The reports that arrived since the last call, oldest first.
     pub fn drain(&self) -> Vec<Report> {
         self.reports.try_iter().collect()
@@ -112,17 +130,27 @@ impl Fishing<'_> {
         let mut loot_serial = None;
         let mut signal_read = Instant::now();
         let mut signal_seen = Instant::now();
+        let mut reeling: Option<Reeling> = None;
         loop {
             let chunk = audio.next(TICK)?;
             let now = started.elapsed().as_secs_f64();
             let before = (run.phase, run.history.len());
             let mut looted = false;
-            let Some(commands) = self.commands() else {
-                return Ok(());
+            // Reeling in carries on after the Angler is gone; reel_in drops it.
+            let commands = match self.commands() {
+                Some(commands) => commands,
+                None if reeling.is_some() => Vec::new(),
+                None => return Ok(()),
             };
             for command in commands {
                 match command {
                     Command::Resume => run.resume(now),
+                    Command::ReelIn => {
+                        reeling.get_or_insert(Reeling {
+                            since: Instant::now(),
+                            pressed: None,
+                        });
+                    }
                 }
             }
             if signal_read.elapsed() >= SIGNAL_CHECK {
@@ -175,6 +203,25 @@ impl Fishing<'_> {
                 run.hear(now, level);
             }
             run.tick(now);
+
+            if let Some(reel) = &mut reeling {
+                // A cast just pressed shows up as Casting until the game starts the channel.
+                let line_out = matches!(run.phase, Phase::Casting) || run.bobber_out();
+                let gave_up = reel.since.elapsed().as_secs_f64() >= CAST_LENGTH;
+                if !line_out || gave_up {
+                    return Ok(());
+                }
+                let due = reel
+                    .pressed
+                    .is_none_or(|pressed| pressed.elapsed() >= REEL_RETRY);
+                if activity == Activity::Fishing && due && focus_reader.has_focus()? {
+                    keyboard.press(self.keystroke)?;
+                    reel.pressed = Some(Instant::now());
+                    // A press on a bite hooks it, and the channel shows a moment after.
+                    run.key_pressed(now);
+                }
+                continue;
+            }
 
             let key_due = run.key_due(now);
             let checked_recently =
