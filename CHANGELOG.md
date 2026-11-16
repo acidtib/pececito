@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.3.0](https://github.com/acidtib/pececito/compare/v1.2.0...v1.3.0) (2026-11-16)
+
+
+### Features
+
+* **pececito:** show the session's loot in place of the casts list ([d211479](https://github.com/acidtib/pececito/commit/d21147963d9a0614d83453bb5baa3513e9beace8))
+
+
+### Bug Fixes
+
+* reel in the line when the time limit ends a session ([5bc1090](https://github.com/acidtib/pececito/commit/5bc1090febc3c07d5d9c941543fe65f311f5e9c1))
+
 ## [1.2.0](https://github.com/acidtib/pececito/compare/v1.1.1...v1.2.0) (2026-11-16)
 
 
