@@ -176,9 +176,15 @@ fn section_label(kit: &Kit, label: &'static str) -> El {
         .color(kit.c.text_faint)
 }
 
-fn minutes_seconds(seconds: f64) -> String {
+/// "4:05", or "1:02:05" from an hour on.
+fn elapsed(seconds: f64) -> String {
     let whole = seconds.max(0.0) as u64;
-    format!("{}:{:02}", whole / 60, whole % 60)
+    let (hours, minutes, seconds) = (whole / 3600, whole / 60 % 60, whole % 60);
+    if hours > 0 {
+        format!("{hours}:{minutes:02}:{seconds:02}")
+    } else {
+        format!("{minutes}:{seconds:02}")
+    }
 }
 
 // Main screen
@@ -580,7 +586,7 @@ fn stats(state: &State, kit: &Kit) -> El {
                 .gap(8.0)
                 .child(tile(hooked, "Hooked"))
                 .child(tile(casts, "Casts"))
-                .child(tile(minutes_seconds(duration), "Time")),
+                .child(tile(elapsed(duration), "Time")),
         )
 }
 
@@ -674,11 +680,7 @@ fn cast_row(state: &State, kit: &Kit, index: usize) -> El {
         .gap(12.0)
         .center_y()
         .child(text(name).font(kit.ty.ui).color(ink).grow(1.0).shrink())
-        .child(
-            text(minutes_seconds(cast.at))
-                .font(TABULAR)
-                .color(c.text_faint),
-        )
+        .child(text(elapsed(cast.at)).font(TABULAR).color(c.text_faint))
 }
 
 /// What a hook caught, as "Oily Blackmouth x2, Firefin Snapper". An item the game hasn't saved a
@@ -1221,4 +1223,18 @@ fn install_button(state: &State, kit: &Kit) -> El {
         .build(kit)
         .pointer(state.window().is_some() && !state.is_installing())
         .key("install-addon")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::elapsed;
+
+    #[test]
+    fn elapsed_adds_hours_from_an_hour_on() {
+        assert_eq!(elapsed(0.0), "0:00");
+        assert_eq!(elapsed(245.9), "4:05");
+        assert_eq!(elapsed(3599.0), "59:59");
+        assert_eq!(elapsed(3600.0), "1:00:00");
+        assert_eq!(elapsed(99_980.0), "27:46:20");
+    }
 }
