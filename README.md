@@ -2,6 +2,8 @@
 
 Fishing bot for WoW Forever. It casts, listens for the splash, and hooks.
 
+<p align="center"><img src=".github/pececito.gif" alt="Pececito fishing a session" width="400"></p>
+
 Works on Linux. Windows builds run but don't fish yet. No macOS build yet.
 
 ## Install
