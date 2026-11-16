@@ -921,8 +921,17 @@ mod tests {
             panic!("no casts panel")
         };
         runtime.wheel(x, y, -10_000.0);
-        runtime.frame(0.1);
+        for _ in 0..20 {
+            runtime.frame(0.1);
+        }
         assert!(inside(element_rect(&runtime, "cast-0"), panel));
+
+        runtime.update(|state, _tx| push_cast(state));
+        runtime.frame(0.1);
+        assert!(
+            inside(element_rect(&runtime, "cast-0"), panel),
+            "a new cast leaves older casts in view"
+        );
     }
 
     #[test]

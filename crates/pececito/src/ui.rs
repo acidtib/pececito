@@ -648,6 +648,7 @@ fn casts(state: &State, kit: &Kit) -> El {
                 .scroll(ScrollSpec {
                     stick_bottom: false,
                 })
+                .scroll_anchor()
                 .child(col().w_full().padding(14.0).gap(10.0).children(rows)),
         ),
     )
