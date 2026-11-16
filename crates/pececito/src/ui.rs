@@ -1,10 +1,12 @@
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::Path;
+use std::rc::Rc;
 use std::sync::OnceLock;
 
 use rune::{
-    Color, Cursor, Cx, Drag, El, Icon, Phase as DragPhase, ScrollSpec, TextStyle, Tx, col, el, row,
-    text,
+    Color, Cursor, Cx, Drag, El, GrowthSpec, Icon, Phase as DragPhase, ScrollPos, ScrollSpec,
+    TextStyle, Tx, col, el, row, text,
 };
 use rune_kit::{
     Button, ButtonVariant, ControlSize, IconButton, IconButtonVariant, Kit, Placement,
@@ -63,6 +65,9 @@ const KNOB: f32 = 18.0;
 const TRACK: f32 = 4.0;
 const STOP_LABEL_WIDTH: f32 = 60.0;
 const TOOLBAR_HEIGHT: f32 = 44.0;
+/// Half the space between cast rows, inside each row since virtual rows take no stack gap.
+const CAST_ROW_PADDING: f32 = 5.0;
+const CAST_ROW_HEIGHT: f32 = 30.0;
 
 const STAT_VALUE: TextStyle = TextStyle {
     features: "'tnum' 1",
@@ -178,7 +183,7 @@ fn minutes_seconds(seconds: f64) -> String {
 
 // Main screen
 
-fn main_screen(state: &State, kit: &Kit, layer: &mut Vec<El>) -> El {
+fn main_screen(state: &State, kit: &'static Kit, layer: &mut Vec<El>) -> El {
     col()
         .min_h(0.0)
         .child(status_card(state, kit))
@@ -579,22 +584,9 @@ fn stats(state: &State, kit: &Kit) -> El {
         )
 }
 
-fn casts(state: &State, kit: &Kit) -> El {
+fn casts(state: &State, kit: &'static Kit) -> El {
     let c = &kit.c;
-    // A hook's row waits for its loot, so it shows the item from the start.
-    let history: Vec<&Cast> = match &state.session {
-        Session::Fishing(fishing) => {
-            let now = state.clock - fishing.started;
-            fishing
-                .run
-                .history
-                .iter()
-                .filter(|cast| !cast.awaits_loot(now))
-                .collect()
-        }
-        Session::Stopped(finished) => finished.run.history.iter().collect(),
-        Session::Idle => Vec::new(),
-    };
+    let shown = state.shown_casts();
     let list = panel(kit)
         .key("casts")
         .grow(1.0)
@@ -606,7 +598,7 @@ fn casts(state: &State, kit: &Kit) -> El {
         .min_h(0.0)
         .gap(8.0)
         .child(section_label(kit, "Recent casts"));
-    if history.is_empty() {
+    if shown.is_empty() {
         return section.child(
             list.center().child(
                 text("Your casts show up here.")
@@ -615,28 +607,26 @@ fn casts(state: &State, kit: &Kit) -> El {
             ),
         );
     }
-    let rows = history.iter().enumerate().rev().map(|(index, cast)| {
-        let (name, ink) = match cast.outcome {
-            Outcome::Hooked { after } if cast.loot.is_empty() => {
-                (format!("Hooked after {after:.1}s"), c.text_base)
-            }
-            Outcome::Hooked { .. } => (loot_names(&cast.loot, &state.item_names), c.text_base),
-            Outcome::NoBite => ("No bite".to_string(), c.text_faint),
-            Outcome::Missed => ("Missed the bite".to_string(), c.text_muted),
-            Outcome::Interrupted => ("Cast ended early".to_string(), c.text_faint),
-        };
-        row()
-            .key(format!("cast-{index}"))
-            .w_full()
-            .gap(12.0)
-            .center_y()
-            .child(text(name).font(kit.ty.ui).color(ink).grow(1.0).shrink())
-            .child(
-                text(minutes_seconds(cast.at))
-                    .font(TABULAR)
-                    .color(c.text_faint),
-            )
-    });
+    let count = shown.len();
+    let version = (count, session_history(state).len());
+    let shown = Rc::new(shown);
+    let keys = Rc::clone(&shown);
+    // Only the rows in view are built, so a session of thousands of casts refreshes as fast as a
+    // short one.
+    let rows = col()
+        .key("cast-rows")
+        .w_full()
+        .px(14.0)
+        .py(CAST_ROW_PADDING)
+        .growth(GrowthSpec::default())
+        .virtual_rows(
+            count,
+            CAST_ROW_HEIGHT,
+            move |_: &State, row| Cow::Owned(format!("cast-{}", keys[row])),
+            move |state: &State, row| cast_row(state, kit, shown[row]),
+        )
+        .virtual_rows_version(version);
+    let offset = state.cast_list.offset.clone();
     // The panel's padding moves inside the viewport so rows scroll under the panel's edge.
     section.child(
         list.padding(0.0).child(
@@ -648,10 +638,47 @@ fn casts(state: &State, kit: &Kit) -> El {
                 .scroll(ScrollSpec {
                     stick_bottom: false,
                 })
-                .scroll_anchor()
-                .child(col().w_full().padding(14.0).gap(10.0).children(rows)),
+                .on_scroll_offset(move |at: ScrollPos| {
+                    offset.set(at.offset[1]);
+                })
+                .child(rows),
         ),
     )
+}
+
+fn session_history(state: &State) -> &[Cast] {
+    match &state.session {
+        Session::Fishing(fishing) => &fishing.run.history,
+        Session::Stopped(finished) => &finished.run.history,
+        Session::Idle => &[],
+    }
+}
+
+fn cast_row(state: &State, kit: &Kit, index: usize) -> El {
+    let c = &kit.c;
+    let Some(cast) = session_history(state).get(index) else {
+        return el();
+    };
+    let (name, ink) = match cast.outcome {
+        Outcome::Hooked { after } if cast.loot.is_empty() => {
+            (format!("Hooked after {after:.1}s"), c.text_base)
+        }
+        Outcome::Hooked { .. } => (loot_names(&cast.loot, &state.item_names), c.text_base),
+        Outcome::NoBite => ("No bite".to_string(), c.text_faint),
+        Outcome::Missed => ("Missed the bite".to_string(), c.text_muted),
+        Outcome::Interrupted => ("Cast ended early".to_string(), c.text_faint),
+    };
+    row()
+        .w_full()
+        .py(CAST_ROW_PADDING)
+        .gap(12.0)
+        .center_y()
+        .child(text(name).font(kit.ty.ui).color(ink).grow(1.0).shrink())
+        .child(
+            text(minutes_seconds(cast.at))
+                .font(TABULAR)
+                .color(c.text_faint),
+        )
 }
 
 /// What a hook caught, as "Oily Blackmouth x2, Firefin Snapper". An item the game hasn't saved a
