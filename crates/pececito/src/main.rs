@@ -867,6 +867,64 @@ mod tests {
         assert_eq!(runtime.state.session, Session::Idle);
     }
 
+    fn element_rect(runtime: &Runtime<State>, key: &str) -> [f32; 4] {
+        let Some(element) = runtime
+            .elements()
+            .into_iter()
+            .find(|element| element.key.as_deref() == Some(key) && !element.exiting)
+        else {
+            panic!("no element {key}")
+        };
+        element.rect
+    }
+
+    fn inside(rect: [f32; 4], panel: [f32; 4]) -> bool {
+        rect[1] >= panel[1] && rect[1] + rect[3] <= panel[1] + panel[3]
+    }
+
+    fn push_cast(state: &mut State) {
+        if let Session::Stopped(finished) = &mut state.session {
+            let at = finished.run.history.len() as f64 * 20.0;
+            finished.run.history.push(fishing::Cast {
+                outcome: fishing::Outcome::NoBite,
+                at,
+                loot: Vec::new(),
+            });
+        }
+    }
+
+    #[test]
+    fn recent_casts_scroll_through_the_whole_session() {
+        let mut runtime = runtime();
+        runtime.update(|state, _tx| {
+            state.session = Session::Stopped(Finished {
+                run: Run::new(0.0, state.hook_delay, 0),
+                duration: 600.0,
+                reason: StopReason::Stopped,
+            });
+            for _ in 0..30 {
+                push_cast(state);
+            }
+        });
+        runtime.frame(0.1);
+        let panel = element_rect(&runtime, "casts");
+        assert!(inside(element_rect(&runtime, "cast-29"), panel));
+        assert!(!inside(element_rect(&runtime, "cast-0"), panel));
+
+        runtime.update(|state, _tx| push_cast(state));
+        runtime.frame(0.1);
+        let newest = element_rect(&runtime, "cast-30");
+        assert!(inside(newest, panel), "a new cast shows at the top");
+        assert!(newest[1] < element_rect(&runtime, "cast-29")[1]);
+
+        let Some((x, y)) = runtime.find("casts") else {
+            panic!("no casts panel")
+        };
+        runtime.wheel(x, y, -10_000.0);
+        runtime.frame(0.1);
+        assert!(inside(element_rect(&runtime, "cast-0"), panel));
+    }
+
     #[test]
     fn fishing_stops_when_the_game_goes_away() {
         let mut runtime = ready();

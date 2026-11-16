@@ -62,7 +62,6 @@ const FISH_FOR_BUTTON_WIDTH: f32 = 96.0;
 const KNOB: f32 = 18.0;
 const TRACK: f32 = 4.0;
 const STOP_LABEL_WIDTH: f32 = 60.0;
-const RECENT_CASTS: usize = 6;
 const TOOLBAR_HEIGHT: f32 = 44.0;
 
 const STAT_VALUE: TextStyle = TextStyle {
@@ -181,6 +180,7 @@ fn minutes_seconds(seconds: f64) -> String {
 
 fn main_screen(state: &State, kit: &Kit, layer: &mut Vec<El>) -> El {
     col()
+        .min_h(0.0)
         .child(status_card(state, kit))
         .child(stats(state, kit))
         .child(casts(state, kit))
@@ -598,23 +598,24 @@ fn casts(state: &State, kit: &Kit) -> El {
     let list = panel(kit)
         .key("casts")
         .grow(1.0)
-        .gap(10.0)
+        .min_h(0.0)
         .clip_rounded(kit.radius.lg);
+    let section = col()
+        .w_full()
+        .grow(1.0)
+        .min_h(0.0)
+        .gap(8.0)
+        .child(section_label(kit, "Recent casts"));
     if history.is_empty() {
-        return col()
-            .w_full()
-            .grow(1.0)
-            .gap(8.0)
-            .child(section_label(kit, "Recent casts"))
-            .child(
-                list.center().child(
-                    text("Your casts show up here.")
-                        .font(kit.ty.ui)
-                        .color(c.text_faint),
-                ),
-            );
+        return section.child(
+            list.center().child(
+                text("Your casts show up here.")
+                    .font(kit.ty.ui)
+                    .color(c.text_faint),
+            ),
+        );
     }
-    let rows = history.iter().rev().take(RECENT_CASTS).map(|cast| {
+    let rows = history.iter().enumerate().rev().map(|(index, cast)| {
         let (name, ink) = match cast.outcome {
             Outcome::Hooked { after } if cast.loot.is_empty() => {
                 (format!("Hooked after {after:.1}s"), c.text_base)
@@ -625,6 +626,7 @@ fn casts(state: &State, kit: &Kit) -> El {
             Outcome::Interrupted => ("Cast ended early".to_string(), c.text_faint),
         };
         row()
+            .key(format!("cast-{index}"))
             .w_full()
             .gap(12.0)
             .center_y()
@@ -635,12 +637,20 @@ fn casts(state: &State, kit: &Kit) -> El {
                     .color(c.text_faint),
             )
     });
-    col()
-        .w_full()
-        .grow(1.0)
-        .gap(8.0)
-        .child(section_label(kit, "Recent casts"))
-        .child(list.children(rows))
+    // The panel's padding moves inside the viewport so rows scroll under the panel's edge.
+    section.child(
+        list.padding(0.0).child(
+            col()
+                .key("casts-scroll")
+                .w_full()
+                .grow(1.0)
+                .min_h(0.0)
+                .scroll(ScrollSpec {
+                    stick_bottom: false,
+                })
+                .child(col().w_full().padding(14.0).gap(10.0).children(rows)),
+        ),
+    )
 }
 
 /// What a hook caught, as "Oily Blackmouth x2, Firefin Snapper". An item the game hasn't saved a
