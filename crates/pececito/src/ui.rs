@@ -597,7 +597,7 @@ fn casts(state: &State, kit: &'static Kit) -> El {
         .grow(1.0)
         .min_h(0.0)
         .gap(8.0)
-        .child(section_label(kit, "Recent casts"));
+        .child(section_label(kit, "Casts"));
     if shown.is_empty() {
         return section.child(
             list.center().child(
