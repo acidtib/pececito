@@ -1,10 +1,13 @@
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::Path;
+use std::rc::Rc;
 use std::sync::OnceLock;
 
+use chrono::{DateTime, Local, TimeDelta, Timelike};
 use rune::{
-    Color, Cursor, Cx, Drag, El, Icon, Phase as DragPhase, ScrollSpec, TextStyle, Tx, col, el, row,
-    text,
+    Color, Cursor, Cx, Drag, El, GrowthSpec, Icon, Phase as DragPhase, ScrollPos, ScrollSpec,
+    TextStyle, Tx, col, el, row, text,
 };
 use rune_kit::{
     Button, ButtonVariant, ControlSize, IconButton, IconButtonVariant, Kit, Placement,
@@ -62,8 +65,10 @@ const FISH_FOR_BUTTON_WIDTH: f32 = 96.0;
 const KNOB: f32 = 18.0;
 const TRACK: f32 = 4.0;
 const STOP_LABEL_WIDTH: f32 = 60.0;
-const RECENT_CASTS: usize = 6;
 const TOOLBAR_HEIGHT: f32 = 44.0;
+/// Half the space between cast rows, inside each row since virtual rows take no stack gap.
+const CAST_ROW_PADDING: f32 = 5.0;
+const CAST_ROW_HEIGHT: f32 = 30.0;
 
 const STAT_VALUE: TextStyle = TextStyle {
     features: "'tnum' 1",
@@ -172,15 +177,38 @@ fn section_label(kit: &Kit, label: &'static str) -> El {
         .color(kit.c.text_faint)
 }
 
-fn minutes_seconds(seconds: f64) -> String {
+/// How long a session ran: "4:05", or "27h 46m" from an hour on.
+fn elapsed(seconds: f64) -> String {
     let whole = seconds.max(0.0) as u64;
-    format!("{}:{:02}", whole / 60, whole % 60)
+    let (hours, minutes, seconds) = (whole / 3600, whole / 60 % 60, whole % 60);
+    if hours > 0 {
+        format!("{hours}h {minutes:02}m")
+    } else {
+        format!("{minutes}:{seconds:02}")
+    }
+}
+
+/// A time of day on a 12-hour clock, as "3:42 PM".
+fn clock_time(time: impl Timelike) -> String {
+    let (afternoon, hour) = time.hour12();
+    let half = if afternoon { "PM" } else { "AM" };
+    format!("{hour}:{:02} {half}", time.minute())
+}
+
+/// When the session in view started on the wall clock.
+fn session_started_at(state: &State) -> Option<DateTime<Local>> {
+    match &state.session {
+        Session::Fishing(fishing) => Some(fishing.started_at),
+        Session::Stopped(finished) => Some(finished.started_at),
+        Session::Idle => None,
+    }
 }
 
 // Main screen
 
-fn main_screen(state: &State, kit: &Kit, layer: &mut Vec<El>) -> El {
+fn main_screen(state: &State, kit: &'static Kit, layer: &mut Vec<El>) -> El {
     col()
+        .min_h(0.0)
         .child(status_card(state, kit))
         .child(stats(state, kit))
         .child(casts(state, kit))
@@ -575,72 +603,104 @@ fn stats(state: &State, kit: &Kit) -> El {
                 .gap(8.0)
                 .child(tile(hooked, "Hooked"))
                 .child(tile(casts, "Casts"))
-                .child(tile(minutes_seconds(duration), "Time")),
+                .child(tile(elapsed(duration), "Time")),
         )
 }
 
-fn casts(state: &State, kit: &Kit) -> El {
+fn casts(state: &State, kit: &'static Kit) -> El {
     let c = &kit.c;
-    // A hook's row waits for its loot, so it shows the item from the start.
-    let history: Vec<&Cast> = match &state.session {
-        Session::Fishing(fishing) => {
-            let now = state.clock - fishing.started;
-            fishing
-                .run
-                .history
-                .iter()
-                .filter(|cast| !cast.awaits_loot(now))
-                .collect()
-        }
-        Session::Stopped(finished) => finished.run.history.iter().collect(),
-        Session::Idle => Vec::new(),
-    };
+    let shown = state.shown_casts();
     let list = panel(kit)
         .key("casts")
         .grow(1.0)
-        .gap(10.0)
+        .min_h(0.0)
         .clip_rounded(kit.radius.lg);
-    if history.is_empty() {
-        return col()
-            .w_full()
-            .grow(1.0)
-            .gap(8.0)
-            .child(section_label(kit, "Recent casts"))
-            .child(
-                list.center().child(
-                    text("Your casts show up here.")
-                        .font(kit.ty.ui)
-                        .color(c.text_faint),
-                ),
-            );
-    }
-    let rows = history.iter().rev().take(RECENT_CASTS).map(|cast| {
-        let (name, ink) = match cast.outcome {
-            Outcome::Hooked { after } if cast.loot.is_empty() => {
-                (format!("Hooked after {after:.1}s"), c.text_base)
-            }
-            Outcome::Hooked { .. } => (loot_names(&cast.loot, &state.item_names), c.text_base),
-            Outcome::NoBite => ("No bite".to_string(), c.text_faint),
-            Outcome::Missed => ("Missed the bite".to_string(), c.text_muted),
-            Outcome::Interrupted => ("Cast ended early".to_string(), c.text_faint),
-        };
-        row()
-            .w_full()
-            .gap(12.0)
-            .center_y()
-            .child(text(name).font(kit.ty.ui).color(ink).grow(1.0).shrink())
-            .child(
-                text(minutes_seconds(cast.at))
-                    .font(TABULAR)
-                    .color(c.text_faint),
-            )
-    });
-    col()
+    let section = col()
         .w_full()
         .grow(1.0)
+        .min_h(0.0)
         .gap(8.0)
-        .child(section_label(kit, "Recent casts"))
-        .child(list.children(rows))
+        .child(section_label(kit, "Casts"));
+    if shown.is_empty() {
+        return section.child(
+            list.center().child(
+                text("Your casts show up here.")
+                    .font(kit.ty.ui)
+                    .color(c.text_faint),
+            ),
+        );
+    }
+    let count = shown.len();
+    let version = (count, session_history(state).len());
+    let shown = Rc::new(shown);
+    let keys = Rc::clone(&shown);
+    // Only the rows in view are built, so a session of thousands of casts refreshes as fast as a
+    // short one.
+    let rows = col()
+        .key("cast-rows")
+        .w_full()
+        .px(14.0)
+        .py(CAST_ROW_PADDING)
+        .growth(GrowthSpec::default())
+        .virtual_rows(
+            count,
+            CAST_ROW_HEIGHT,
+            move |_: &State, row| Cow::Owned(format!("cast-{}", keys[row])),
+            move |state: &State, row| cast_row(state, kit, shown[row]),
+        )
+        .virtual_rows_version(version);
+    let offset = state.cast_list.offset.clone();
+    // The panel's padding moves inside the viewport so rows scroll under the panel's edge.
+    section.child(
+        list.padding(0.0).child(
+            col()
+                .key("casts-scroll")
+                .w_full()
+                .grow(1.0)
+                .min_h(0.0)
+                .scroll(ScrollSpec {
+                    stick_bottom: false,
+                })
+                .on_scroll_offset(move |at: ScrollPos| {
+                    offset.set(at.offset[1]);
+                })
+                .child(rows),
+        ),
+    )
+}
+
+fn session_history(state: &State) -> &[Cast] {
+    match &state.session {
+        Session::Fishing(fishing) => &fishing.run.history,
+        Session::Stopped(finished) => &finished.run.history,
+        Session::Idle => &[],
+    }
+}
+
+fn cast_row(state: &State, kit: &Kit, index: usize) -> El {
+    let c = &kit.c;
+    let Some(cast) = session_history(state).get(index) else {
+        return el();
+    };
+    let cast_time = session_started_at(state)
+        .map(|started| clock_time(started + TimeDelta::milliseconds((cast.at * 1000.0) as i64)))
+        .unwrap_or_default();
+    let (name, ink) = match cast.outcome {
+        Outcome::Hooked { after } if cast.loot.is_empty() => {
+            (format!("Hooked after {after:.1}s"), c.text_base)
+        }
+        Outcome::Hooked { .. } => (loot_names(&cast.loot, &state.item_names), c.text_base),
+        Outcome::NoBite => ("No bite".to_string(), c.text_faint),
+        Outcome::Missed => ("Missed the bite".to_string(), c.text_muted),
+        Outcome::Interrupted => ("Cast ended early".to_string(), c.text_faint),
+    };
+    row()
+        .w_full()
+        .py(CAST_ROW_PADDING)
+        .gap(12.0)
+        .center_y()
+        .child(text(name).font(kit.ty.ui).color(ink).grow(1.0).shrink())
+        .child(text(cast_time).font(TABULAR).color(c.text_faint))
 }
 
 /// What a hook caught, as "Oily Blackmouth x2, Firefin Snapper". An item the game hasn't saved a
@@ -1183,4 +1243,28 @@ fn install_button(state: &State, kit: &Kit) -> El {
         .build(kit)
         .pointer(state.window().is_some() && !state.is_installing())
         .key("install-addon")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{clock_time, elapsed};
+    use chrono::NaiveTime;
+
+    #[test]
+    fn elapsed_adds_hours_from_an_hour_on() {
+        assert_eq!(elapsed(0.0), "0:00");
+        assert_eq!(elapsed(245.9), "4:05");
+        assert_eq!(elapsed(3599.0), "59:59");
+        assert_eq!(elapsed(3600.0), "1h 00m");
+        assert_eq!(elapsed(99_980.0), "27h 46m");
+    }
+
+    #[test]
+    fn clock_time_reads_on_a_12_hour_clock() {
+        let at = |hour, minute| NaiveTime::from_hms_opt(hour, minute, 30).map(clock_time);
+        assert_eq!(at(0, 5).as_deref(), Some("12:05 AM"));
+        assert_eq!(at(9, 41).as_deref(), Some("9:41 AM"));
+        assert_eq!(at(12, 0).as_deref(), Some("12:00 PM"));
+        assert_eq!(at(15, 42).as_deref(), Some("3:42 PM"));
+    }
 }

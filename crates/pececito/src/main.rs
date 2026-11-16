@@ -12,10 +12,11 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
 use std::time::Duration;
 
+use chrono::{DateTime, Local};
 use rune::prefs::{Prefs, PrefsError};
 use rune::{
-    AppSpec, Display, Image, ImageCache, Key, KeyEvent, Mods, PhysicalKeyCode, Shortcut, Tx, Waker,
-    WindowHandle, WindowOptions, WindowSpec,
+    AppSpec, Display, Image, ImageCache, Key, KeyEvent, Live, Mods, PhysicalKeyCode, Shortcut, Tx,
+    Waker, WindowHandle, WindowOptions, WindowSpec,
 };
 use rune_kit::ShortcutRecorderState;
 
@@ -70,6 +71,8 @@ enum FishForPicker {
 struct Fishing {
     /// App clock time the session started; the run's times count from here.
     started: f64,
+    /// When the session started on the wall clock, for the times the casts list shows.
+    started_at: DateTime<Local>,
     run: Run,
     has_focus: bool,
 }
@@ -141,6 +144,7 @@ impl Job {
 #[derive(Clone, Debug, PartialEq)]
 struct Finished {
     run: Run,
+    started_at: DateTime<Local>,
     duration: f64,
     reason: StopReason,
 }
@@ -181,6 +185,15 @@ struct State {
     app_window: Option<WindowHandle>,
     /// The app icon for the About section, decoded off the UI thread.
     logo: Option<Image>,
+    cast_list: CastList,
+}
+
+/// Where the casts list sits, so a new cast at the top stays in view while the list is there.
+struct CastList {
+    /// How far the list is scrolled down, in points; set by the list as it scrolls.
+    offset: Live<f32>,
+    /// Rows the list showed after the last `poll`.
+    shown: usize,
 }
 
 impl State {
@@ -211,7 +224,38 @@ impl State {
             waker: None,
             app_window: None,
             logo: None,
+            cast_list: CastList {
+                offset: Live::new(0.0),
+                shown: 0,
+            },
         }
+    }
+
+    /// Indexes into the session's history of the casts the list shows, newest first. A hook
+    /// waiting for its loot stays out, so its row shows the item from the start.
+    fn shown_casts(&self) -> Vec<usize> {
+        match &self.session {
+            Session::Fishing(fishing) => {
+                let now = self.clock - fishing.started;
+                let history = &fishing.run.history;
+                (0..history.len())
+                    .rev()
+                    .filter(|&index| !history[index].awaits_loot(now))
+                    .collect()
+            }
+            Session::Stopped(finished) => (0..finished.run.history.len()).rev().collect(),
+            Session::Idle => Vec::new(),
+        }
+    }
+
+    /// Virtual rows keep the reader's row in place when one is added above, even at the top,
+    /// so the list moves back up to show a new cast there.
+    fn follow_new_casts(&mut self, tx: &mut Tx) {
+        let shown = self.shown_casts().len();
+        if shown > self.cast_list.shown && self.cast_list.offset.get() < 1.0 {
+            tx.scroll_to_y("casts-scroll", 0.0);
+        }
+        self.cast_list.shown = shown;
     }
 
     fn window(&self) -> Option<&GameWindow> {
@@ -253,6 +297,7 @@ impl State {
             Err(error) => {
                 self.session = Session::Stopped(Finished {
                     run: Run::new(0.0, self.hook_delay, 0),
+                    started_at: Local::now(),
                     duration: 0.0,
                     reason: StopReason::Failed(error),
                 });
@@ -269,6 +314,7 @@ impl State {
         }
         self.session = Session::Fishing(Fishing {
             started: self.clock,
+            started_at: Local::now(),
             run: Run::new(0.0, self.hook_delay, 0),
             has_focus: true,
         });
@@ -302,6 +348,7 @@ impl State {
         if let Session::Fishing(fishing) = std::mem::take(&mut self.session) {
             self.session = Session::Stopped(Finished {
                 run: fishing.run,
+                started_at: fishing.started_at,
                 duration: self.clock - fishing.started,
                 reason,
             });
@@ -599,6 +646,7 @@ fn poll(state: &mut State, time: f64, tx: &mut Tx) -> bool {
     changed |= state.finish_jobs();
     changed |= state.finish_saves();
     state.check_time_limit();
+    state.follow_new_casts(tx);
     if state.is_fishing() {
         tx.wake_after(SESSION_REFRESH);
         changed = true;
@@ -865,6 +913,106 @@ mod tests {
         tap(&mut runtime, "stop");
         tap(&mut runtime, "reset");
         assert_eq!(runtime.state.session, Session::Idle);
+    }
+
+    fn element_rect(runtime: &Runtime<State>, key: &str) -> Option<[f32; 4]> {
+        runtime
+            .elements()
+            .into_iter()
+            .find(|element| element.key.as_deref() == Some(key) && !element.exiting)
+            .map(|element| element.rect)
+    }
+
+    /// Whether the row keyed `key` is built and wholly inside the casts panel.
+    fn in_view(runtime: &Runtime<State>, key: &str) -> bool {
+        let Some(panel) = element_rect(runtime, "casts") else {
+            panic!("no casts panel")
+        };
+        element_rect(runtime, key)
+            .is_some_and(|rect| rect[1] >= panel[1] && rect[1] + rect[3] <= panel[1] + panel[3])
+    }
+
+    fn built_rows(runtime: &Runtime<State>) -> usize {
+        runtime
+            .elements()
+            .iter()
+            .filter(|element| {
+                element.key.as_deref().is_some_and(|key| {
+                    key.strip_prefix("cast-")
+                        .is_some_and(|index| index.parse::<usize>().is_ok())
+                })
+            })
+            .count()
+    }
+
+    fn push_cast(state: &mut State) {
+        if let Session::Stopped(finished) = &mut state.session {
+            let at = finished.run.history.len() as f64 * 20.0;
+            finished.run.history.push(fishing::Cast {
+                outcome: fishing::Outcome::NoBite,
+                at,
+                loot: Vec::new(),
+            });
+        }
+    }
+
+    #[test]
+    fn recent_casts_scroll_through_the_whole_session() {
+        let mut runtime = runtime();
+        runtime.update(|state, _tx| {
+            state.session = Session::Stopped(Finished {
+                run: Run::new(0.0, state.hook_delay, 0),
+                started_at: Local::now(),
+                duration: 600.0,
+                reason: StopReason::Stopped,
+            });
+            for _ in 0..1_000 {
+                push_cast(state);
+            }
+        });
+        runtime.frame(0.1);
+        assert!(in_view(&runtime, "cast-999"));
+        assert!(!in_view(&runtime, "cast-0"));
+        assert!(
+            built_rows(&runtime) < 50,
+            "only rows near the view are built"
+        );
+
+        runtime.update(|state, tx| {
+            push_cast(state);
+            poll(state, tx.clock(), tx);
+        });
+        runtime.frame(0.1);
+        assert!(
+            in_view(&runtime, "cast-1000"),
+            "a new cast shows at the top"
+        );
+        let (Some(newest), Some(previous)) = (
+            element_rect(&runtime, "cast-1000"),
+            element_rect(&runtime, "cast-999"),
+        ) else {
+            panic!("the newest casts aren't built")
+        };
+        assert!(newest[1] < previous[1]);
+
+        let Some((x, y)) = runtime.find("casts") else {
+            panic!("no casts panel")
+        };
+        runtime.wheel(x, y, -100_000.0);
+        for _ in 0..20 {
+            runtime.frame(0.1);
+        }
+        assert!(in_view(&runtime, "cast-0"));
+
+        runtime.update(|state, tx| {
+            push_cast(state);
+            poll(state, tx.clock(), tx);
+        });
+        runtime.frame(0.1);
+        assert!(
+            in_view(&runtime, "cast-0"),
+            "a new cast leaves older casts in view"
+        );
     }
 
     #[test]
