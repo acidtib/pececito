@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.2.0](https://github.com/acidtib/pececito/compare/v1.1.1...v1.2.0) (2026-11-16)
+
+
+### Features
+
+* **pececito:** scroll recent casts to show the whole session ([#25](https://github.com/acidtib/pececito/issues/25)) ([337f8b9](https://github.com/acidtib/pececito/commit/337f8b95b7bf10642adc0e7b31da8fe12345d31e))
+* **pececito:** show item icons in the casts list ([#27](https://github.com/acidtib/pececito/issues/27)) ([3effacb](https://github.com/acidtib/pececito/commit/3effacbd28aff43f202371699cc063c3d4835c7e))
+
 ## [1.1.1](https://github.com/acidtib/pececito/compare/v1.1.0...v1.1.1) (2026-11-15)
 
 
