@@ -1,5 +1,4 @@
 use std::borrow::Cow;
-use std::collections::HashMap;
 use std::path::Path;
 use std::rc::Rc;
 use std::sync::OnceLock;
@@ -69,6 +68,9 @@ const TOOLBAR_HEIGHT: f32 = 44.0;
 /// Half the space between cast rows, inside each row since virtual rows take no stack gap.
 const CAST_ROW_PADDING: f32 = 5.0;
 const CAST_ROW_HEIGHT: f32 = 30.0;
+/// One line of a cast row: its label, or one item a hook caught.
+const CAST_LINE_HEIGHT: f32 = 20.0;
+const ITEM_ICON_SIZE: f32 = 20.0;
 
 const STAT_VALUE: TextStyle = TextStyle {
     features: "'tnum' 1",
@@ -685,42 +687,71 @@ fn cast_row(state: &State, kit: &Kit, index: usize) -> El {
     let cast_time = session_started_at(state)
         .map(|started| clock_time(started + TimeDelta::milliseconds((cast.at * 1000.0) as i64)))
         .unwrap_or_default();
-    let (name, ink) = match cast.outcome {
-        Outcome::Hooked { after } if cast.loot.is_empty() => {
-            (format!("Hooked after {after:.1}s"), c.text_base)
-        }
-        Outcome::Hooked { .. } => (loot_names(&cast.loot, &state.item_names), c.text_base),
-        Outcome::NoBite => ("No bite".to_string(), c.text_faint),
-        Outcome::Missed => ("Missed the bite".to_string(), c.text_muted),
-        Outcome::Interrupted => ("Cast ended early".to_string(), c.text_faint),
+    let line = |label: String, ink: Color| {
+        row()
+            .w_full()
+            .h(CAST_LINE_HEIGHT)
+            .center_y()
+            .child(text(label).font(kit.ty.ui).color(ink).grow(1.0).shrink())
     };
+    let what = match cast.outcome {
+        Outcome::Hooked { .. } if !cast.loot.is_empty() => col()
+            .w_full()
+            .gap(4.0)
+            .children(cast.loot.iter().map(|loot| loot_line(state, kit, loot))),
+        Outcome::Hooked { after } => line(format!("Hooked after {after:.1}s"), c.text_base),
+        Outcome::NoBite => line("No bite".to_string(), c.text_faint),
+        Outcome::Missed => line("Missed the bite".to_string(), c.text_muted),
+        Outcome::Interrupted => line("Cast ended early".to_string(), c.text_faint),
+    };
+    // The time lines up with the first item of a hook that caught several.
     row()
         .w_full()
         .py(CAST_ROW_PADDING)
         .gap(12.0)
-        .center_y()
-        .child(text(name).font(kit.ty.ui).color(ink).grow(1.0).shrink())
-        .child(text(cast_time).font(TABULAR).color(c.text_faint))
+        .child(what.grow(1.0).shrink())
+        .child(
+            row()
+                .h(CAST_LINE_HEIGHT)
+                .center_y()
+                .child(text(cast_time).font(TABULAR).color(c.text_faint)),
+        )
 }
 
-/// What a hook caught, as "Oily Blackmouth x2, Firefin Snapper". An item the game hasn't saved a
-/// name for yet shows its id.
-fn loot_names(loot: &[Loot], names: &HashMap<u32, String>) -> String {
-    let items: Vec<String> = loot
-        .iter()
-        .map(|loot| {
-            let name = names
-                .get(&loot.item)
-                .cloned()
-                .unwrap_or_else(|| format!("Item {}", loot.item));
-            if loot.count > 1 {
-                format!("{name} x{}", loot.count)
-            } else {
-                name
-            }
-        })
-        .collect();
-    items.join(", ")
+/// One item a hook caught: its icon, then its name, as "Oily Blackmouth x2". An item the game
+/// hasn't saved a name for yet shows its id, and one outside the fishing list has no icon.
+fn loot_line(state: &State, kit: &Kit, loot: &Loot) -> El {
+    let name = state
+        .item_names
+        .get(&loot.item)
+        .cloned()
+        .unwrap_or_else(|| format!("Item {}", loot.item));
+    let name = if loot.count > 1 {
+        format!("{name} x{}", loot.count)
+    } else {
+        name
+    };
+    let icon = el()
+        .size(ITEM_ICON_SIZE, ITEM_ICON_SIZE)
+        .radius(4.0)
+        .clip_rounded(4.0);
+    let icon = match state.item_icons.get(&loot.item) {
+        Some(image) => icon.pixels(image.pixels()),
+        None => icon,
+    };
+    row()
+        .w_full()
+        .h(CAST_LINE_HEIGHT)
+        .gap(8.0)
+        .center_y()
+        .child(icon)
+        .child(
+            text(name)
+                .font(kit.ty.ui)
+                .color(kit.c.text_base)
+                .grow(1.0)
+                .shrink(),
+        )
 }
 
 fn action_button(state: &State, kit: &Kit) -> El {

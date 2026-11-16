@@ -6,6 +6,10 @@ mod settings;
 mod ui;
 mod update;
 
+mod item_icons {
+    include!(concat!(env!("OUT_DIR"), "/item_icons.rs"));
+}
+
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
@@ -176,6 +180,8 @@ struct State {
     angler: Option<Angler>,
     /// The names of items the addon has seen looted, by item id.
     item_names: HashMap<u32, String>,
+    /// The icons of the items fishing can give, by item id; loaded in `setup`.
+    item_icons: HashMap<u32, Image>,
     install: Job,
     open_config: Job,
     update: Update,
@@ -218,6 +224,7 @@ impl State {
             watcher: None,
             angler: None,
             item_names: HashMap::new(),
+            item_icons: HashMap::new(),
             install: Job::Idle,
             open_config: Job::Idle,
             update: Update::Unchecked,
@@ -618,11 +625,24 @@ fn init() -> State {
     state
 }
 
+/// Loads each built-in icon once; items that share an icon share its image.
+fn load_item_icons(images: &ImageCache) -> HashMap<u32, Image> {
+    let by_name: HashMap<&str, Image> = item_icons::ITEM_ICONS
+        .iter()
+        .map(|&(name, bytes)| (name, images.load(bytes)))
+        .collect();
+    game::fishing_loot_icons()
+        .filter_map(|(item, icon)| Some((item, by_name.get(icon)?.clone())))
+        .collect()
+}
+
 fn setup(state: &mut State, waker: Waker) {
     state.waker = Some(waker.clone());
     state.settings.set_waker(waker.clone());
     // Rasterized at 2x so it stays sharp on HiDPI; smaller scales draw from its mips.
-    state.logo = Some(ImageCache::new(waker.clone()).svg(LOGO_SVG, ui::LOGO_SIZE, 2.0));
+    let images = ImageCache::new(waker.clone());
+    state.logo = Some(images.svg(LOGO_SVG, ui::LOGO_SIZE, 2.0));
+    state.item_icons = load_item_icons(&images);
     state.watcher = Some(Watcher::start(move || waker()));
 }
 
