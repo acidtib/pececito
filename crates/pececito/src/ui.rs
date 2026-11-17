@@ -7,7 +7,7 @@ use rune::{
 };
 use rune_kit::{
     Button, ButtonVariant, ControlSize, IconButton, IconButtonVariant, Kit, Placement,
-    SegmentedControl, ShortcutRecorder, popover, scrim,
+    SegmentedControl, ShortcutRecorder, Spinner, popover, scrim,
 };
 
 use crate::update::{self, Update};
@@ -57,7 +57,7 @@ pub const FISH_FOR: [SessionLength; 5] = [
 /// The main screen's panels in the fixed 400 pt window, inside its 16 pt padding.
 const CONTENT_WIDTH: f32 = 368.0;
 const POPOVER_PADDING: f32 = 14.0;
-const FISH_FOR_BUTTON_WIDTH: f32 = 96.0;
+const FISH_FOR_BUTTON_WIDTH: f32 = 116.0;
 const KNOB: f32 = 18.0;
 const TRACK: f32 = 4.0;
 const STOP_LABEL_WIDTH: f32 = 60.0;
@@ -118,11 +118,53 @@ static CIRCLE: Icon = Icon {
     body: r#"<circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2"/>"#,
 };
 
+static DOWNLOAD: Icon = Icon {
+    name: "pececito-download",
+    view: 24.0,
+    body: r#"<path d="M12 4v11M7 10l5 5 5-5M5 20h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>"#,
+};
+
+static ROTATE_CW: Icon = Icon {
+    name: "pececito-rotate-cw",
+    view: 24.0,
+    body: r#"<path d="M21 12a9 9 0 1 1-9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M21 3v5h-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>"#,
+};
+
+static EXTERNAL: Icon = Icon {
+    name: "pececito-external",
+    view: 24.0,
+    body: r#"<path d="M15 3h6v6M10 14 21 3M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>"#,
+};
+
+static PLAY: Icon = Icon {
+    name: "pececito-play",
+    view: 24.0,
+    body: r#"<path d="M7 4.5v15l12-7.5z" fill="currentColor" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>"#,
+};
+
+static STOP: Icon = Icon {
+    name: "pececito-stop",
+    view: 24.0,
+    body: r#"<rect x="5.5" y="5.5" width="13" height="13" rx="2.5" fill="currentColor"/>"#,
+};
+
+static CLOCK: Icon = Icon {
+    name: "pececito-clock",
+    view: 24.0,
+    body: r#"<circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M12 7v5l3 2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>"#,
+};
+
 fn kit(dark: bool) -> &'static Kit {
     static DARK: OnceLock<Kit> = OnceLock::new();
     static LIGHT: OnceLock<Kit> = OnceLock::new();
     let cell = if dark { &DARK } else { &LIGHT };
-    cell.get_or_init(|| Kit::neutral(dark))
+    cell.get_or_init(|| {
+        let mut kit = Kit::neutral(dark);
+        // Only Contrast buttons read these, so they become the app's call-to-action color.
+        kit.c.bg_contrast = rune::tok::accent(0, dark);
+        kit.c.text_contrast = Color::WHITE;
+        kit
+    })
 }
 
 pub fn view(state: &State, cx: &mut Cx<State>) -> El {
@@ -349,7 +391,9 @@ fn status_card(state: &State, kit: &Kit) -> El {
     }
     let open_settings = || {
         Button::new("Open settings")
-            .variant(ButtonVariant::Neutral)
+            .variant(ButtonVariant::Contrast)
+            .control_size(ControlSize::Large)
+            .icon(&GEAR)
             .on_press(State::open_settings)
             .build(kit)
             .pointer(true)
@@ -496,7 +540,9 @@ fn fishing_status(card: El, fishing: &Fishing, clock: f64, kit: &Kit) -> El {
             }
         };
         let resume = Button::new("Resume")
-            .variant(ButtonVariant::Neutral)
+            .variant(ButtonVariant::Contrast)
+            .control_size(ControlSize::Large)
+            .icon(&PLAY)
             .on_press(State::resume)
             .build(kit)
             .pointer(true)
@@ -766,18 +812,36 @@ fn action_button(state: &State, kit: &Kit) -> El {
         Session::Fishing(_) => Button::new("Stop fishing")
             .variant(ButtonVariant::Danger)
             .control_size(ControlSize::ExtraLarge)
+            .icon(&STOP)
             .on_press(State::stop)
             .build(kit)
             .pointer(true)
             .key("stop"),
         Session::Idle | Session::Stopped(_) => Button::new("Start fishing")
-            .variant(ButtonVariant::Submit)
+            .variant(ButtonVariant::Contrast)
             .control_size(ControlSize::ExtraLarge)
+            .icon(&PLAY)
+            .help(start_blocked(state).unwrap_or("Cast and hook until you stop"))
             .disabled(!state.can_fish())
             .on_press_tx(State::start)
             .build(kit)
             .pointer(state.can_fish())
             .key("fish"),
+    }
+}
+
+/// Why Start fishing is unavailable, for its tooltip.
+fn start_blocked(state: &State) -> Option<&'static str> {
+    if state.fishing_key.shortcut().is_none() {
+        Some("Set your fishing key in Settings first")
+    } else if state.fishing_key.is_recording() {
+        Some("Finish setting your fishing key first")
+    } else if state.window().is_none() {
+        Some("Open the game first")
+    } else if state.addon() != Some(AddonState::Showing) {
+        Some("Load Pececito's addon in the game first")
+    } else {
+        None
     }
 }
 
@@ -787,6 +851,7 @@ fn fish_for_button(state: &State, kit: &Kit, layer: &mut Vec<El>) -> El {
     let trigger = Button::new(picked.map_or("", |length| length.label))
         .variant(ButtonVariant::Neutral)
         .control_size(ControlSize::ExtraLarge)
+        .icon(&CLOCK)
         .on_press(State::toggle_fish_for)
         .build(kit)
         .pointer(true)
@@ -950,12 +1015,19 @@ fn update_setting(state: &State, kit: &Kit) -> El {
         Update::Available(version) if update::installs_itself() => {
             (format!("Version {version} is out."), c.text_base, "Update")
         }
-        Update::Available(version) | Update::Opening(version, _) => (
+        Update::Available(version) => (
             format!(
                 "Version {version} is out. This copy can't update itself, so download it from the release page."
             ),
             c.text_base,
             "Download",
+        ),
+        Update::Opening(version, _) => (
+            format!(
+                "Version {version} is out. This copy can't update itself, so download it from the release page."
+            ),
+            c.text_base,
+            "Opening",
         ),
         Update::Installing(version, _) => (
             format!("Installing version {version}."),
@@ -969,10 +1041,23 @@ fn update_setting(state: &State, kit: &Kit) -> El {
         ),
         Update::Failed(error) => (error.clone(), c.danger.fg, "Check for updates"),
     };
+    let button = match &state.update {
+        Update::Checking(_) | Update::Installing(..) | Update::Opening(..) => {
+            busy_button(kit, label)
+        }
+        Update::Available(_) if update::installs_itself() => {
+            setting_button(label, &DOWNLOAD, ButtonVariant::Contrast)
+        }
+        Update::Available(_) => setting_button(label, &EXTERNAL, ButtonVariant::Contrast),
+        Update::Installed(_) => setting_button(label, &CIRCLE_CHECK, ButtonVariant::Outline)
+            .disabled(true)
+            .help("Close and reopen Pececito to use it"),
+        Update::Unchecked | Update::UpToDate | Update::Failed(_) => {
+            setting_button(label, &ROTATE_CW, ButtonVariant::Outline)
+        }
+    };
     let ready = !state.update.is_busy() && !matches!(state.update, Update::Installed(_));
-    let button = Button::new(label)
-        .variant(ButtonVariant::Neutral)
-        .disabled(!ready)
+    let button = button
         .on_press(State::advance_update)
         .build(kit)
         .pointer(ready)
@@ -1006,8 +1091,8 @@ fn config_file_setting(state: &State, kit: &Kit) -> El {
         ),
     };
     let location = path.map_or_else(|| "No file".to_string(), display_path);
-    let open = Button::new("Open")
-        .variant(ButtonVariant::Neutral)
+    let open = setting_button("Open", &EXTERNAL, ButtonVariant::Outline)
+        .help("Open the settings file in your text editor")
         .disabled(path.is_none())
         .on_press(State::open_config_file)
         .build(kit)
@@ -1267,25 +1352,61 @@ fn addon_setting(state: &State, kit: &Kit) -> El {
 }
 
 fn install_button(state: &State, kit: &Kit) -> El {
-    let label = match state.addon() {
-        _ if state.is_installing() => "Installing",
-        Some(AddonState::Mismatched(AddonMismatch::Older { .. })) => "Update",
+    if state.is_installing() {
+        return busy_button(kit, "Installing")
+            .build(kit)
+            .key("install-addon");
+    }
+    let button = match state.addon() {
+        _ if state.window().is_none() => {
+            setting_button("Install", &DOWNLOAD, ButtonVariant::Outline)
+                .disabled(true)
+                .help("Open the game first")
+        }
+        Some(AddonState::NotInstalled) | None => {
+            setting_button("Install", &DOWNLOAD, ButtonVariant::Contrast)
+        }
+        Some(AddonState::Mismatched(AddonMismatch::Older { .. })) => {
+            setting_button("Update", &DOWNLOAD, ButtonVariant::Contrast)
+        }
+        Some(AddonState::Mismatched(AddonMismatch::Newer { .. } | AddonMismatch::Edited)) => {
+            setting_button("Reinstall", &ROTATE_CW, ButtonVariant::Contrast)
+        }
         Some(
-            AddonState::Mismatched(AddonMismatch::Newer { .. } | AddonMismatch::Edited)
-            | AddonState::NotShowing
+            AddonState::NotShowing
             | AddonState::Unreadable(_)
             | AddonState::NoPole
             | AddonState::Showing,
-        ) => "Reinstall",
-        Some(AddonState::NotInstalled) | None => "Install",
+        ) => setting_button("Reinstall", &ROTATE_CW, ButtonVariant::Outline),
     };
-    Button::new(label)
-        .variant(ButtonVariant::Neutral)
-        .disabled(state.window().is_none() || state.is_installing())
+    button
         .on_press(State::install_addon)
         .build(kit)
-        .pointer(state.window().is_some() && !state.is_installing())
+        .pointer(state.window().is_some())
         .key("install-addon")
+}
+
+/// A button beside a setting, sized to line up with the fishing key field.
+fn setting_button(label: &'static str, icon: &'static Icon, variant: ButtonVariant) -> Button {
+    Button::new(label)
+        .variant(variant)
+        .control_size(ControlSize::Large)
+        .icon(icon)
+}
+
+/// A setting's button while its work runs: a spinner in place of the icon, and no presses.
+fn busy_button(kit: &Kit, label: &'static str) -> Button {
+    let spinner = Spinner::new().size(14.0).color(kit.c.icon_muted).build(kit);
+    Button::new(label)
+        .variant(ButtonVariant::Loading)
+        .control_size(ControlSize::Large)
+        .label_with(move |font, ink| {
+            row()
+                .gap(6.0)
+                .center_y()
+                .child(spinner)
+                .child(text(label).font(font).color(ink))
+        })
 }
 
 #[cfg(test)]
