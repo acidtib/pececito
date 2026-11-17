@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use rune::prefs::{Prefs, PrefsError};
 use rune::{
@@ -35,6 +35,9 @@ const WINDOW_SIZE: (f32, f32) = (400.0, 600.0);
 const FISHING_KEY_PREF: &str = "fishing_key";
 const HOOK_DELAY_PREF: &str = "hook_delay";
 const FISH_FOR_PREF: &str = "fish_for_minutes";
+const CHECK_FOR_UPDATES_PREF: &str = "check_for_updates";
+/// When the last update check succeeded, in seconds since 1970.
+const LAST_UPDATE_CHECK_PREF: &str = "last_update_check";
 /// The window frame's top-left in physical desktop pixels.
 const WINDOW_POSITION_PREF: &str = "window_position";
 /// Where "Fish for" was saved when it was called "Stop after".
@@ -181,6 +184,11 @@ struct State {
     install: Job,
     open_config: Job,
     update: Update,
+    check_for_updates: bool,
+    last_update_check: Option<SystemTime>,
+    /// When the next scheduled update check runs. None where none run: before `setup`, in
+    /// tests, and in headless runs, which stay off the network.
+    next_update_check: Option<SystemTime>,
     /// Set by `setup`; tests have none, so starting a session there presses no keys.
     waker: Option<Waker>,
     /// Pececito's own window, to save where it sits when it closes.
@@ -200,6 +208,10 @@ impl State {
             .and_then(|name| HookDelay::from_name(&name))
             .unwrap_or_default();
         let fish_for = load_fish_for(&prefs);
+        let check_for_updates = prefs.get::<bool>(CHECK_FOR_UPDATES_PREF).unwrap_or(true);
+        let last_update_check = prefs
+            .get::<u64>(LAST_UPDATE_CHECK_PREF)
+            .map(|seconds| SystemTime::UNIX_EPOCH + Duration::from_secs(seconds));
         State {
             game: Game::default(),
             session: Session::default(),
@@ -218,6 +230,9 @@ impl State {
             install: Job::Idle,
             open_config: Job::Idle,
             update: Update::Unchecked,
+            check_for_updates,
+            last_update_check,
+            next_update_check: None,
             waker: None,
             app_window: None,
             frame_positions: None,
@@ -445,14 +460,73 @@ impl State {
             .start(self.waker.clone(), move || open_file(&path));
     }
 
-    /// Checks for a newer release, or gets the one a check found.
-    fn advance_update(&mut self) {
+    /// Checks for a newer release, gets the one a check found, or restarts into it.
+    fn advance_update(&mut self, tx: &mut Tx) {
+        if self.update.installed().is_some() {
+            self.restart(tx);
+            return;
+        }
+        let wake = self.wake();
+        self.update.advance(wake);
+    }
+
+    fn wake(&self) -> impl FnOnce() + Send + 'static {
         let waker = self.waker.clone();
-        self.update.advance(move || {
+        move || {
             if let Some(waker) = waker {
                 waker();
             }
-        });
+        }
+    }
+
+    fn toggle_update_checks(&mut self) {
+        self.check_for_updates = !self.check_for_updates;
+        let on = self.check_for_updates;
+        self.save(move |prefs| prefs.set(CHECK_FOR_UPDATES_PREF, &on));
+    }
+
+    /// Starts the scheduled check once it's due, or wakes the app when it will be.
+    fn check_for_updates_when_due(&mut self, tx: &mut Tx) -> bool {
+        let Some(due) = self.next_update_check else {
+            return false;
+        };
+        if !self.check_for_updates || !self.update.can_check() {
+            return false;
+        }
+        match due.duration_since(SystemTime::now()) {
+            // The wake runs on a clock that may stop while the computer sleeps, so it comes at
+            // least hourly and the wall clock decides.
+            Ok(wait) if !wait.is_zero() => {
+                tx.wake_after(wait.min(update::RETRY_AFTER));
+                false
+            }
+            _ => {
+                let wake = self.wake();
+                self.update.check_in_background(wake);
+                true
+            }
+        }
+    }
+
+    /// Schedules the next check from how the one that just finished went.
+    fn finish_check(&mut self) {
+        let now = SystemTime::now();
+        let checked = matches!(self.update, Update::Available(_) | Update::UpToDate);
+        if checked {
+            self.last_update_check = Some(now);
+            let seconds = now
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .map_or(0, |since| since.as_secs());
+            self.save(move |prefs| prefs.set(LAST_UPDATE_CHECK_PREF, &seconds));
+        }
+        if let Some(next) = &mut self.next_update_check {
+            *next = now
+                + if checked {
+                    update::CHECK_EVERY
+                } else {
+                    update::RETRY_AFTER
+                };
+        }
     }
 
     /// Writes the settings still at their defaults, so the file lists every one, and drops the
@@ -463,7 +537,11 @@ impl State {
         let minutes = ui::FISH_FOR
             .get(self.fish_for)
             .and_then(|length| length.minutes);
+        let check_for_updates = self.check_for_updates;
         self.save(move |prefs| {
+            if !prefs.contains(CHECK_FOR_UPDATES_PREF) {
+                prefs.set(CHECK_FOR_UPDATES_PREF, &check_for_updates)?;
+            }
             if !prefs.contains(FISHING_KEY_PREF) {
                 prefs.set(FISHING_KEY_PREF, &fishing_key)?;
             }
@@ -507,8 +585,23 @@ impl State {
             *addon = AddonState::NotShowing;
         }
         let opened = self.open_config.finish();
+        let checking = self.update.is_checking();
         let updated = self.update.finish();
+        if updated && checking {
+            self.finish_check();
+        }
         installed.is_some() || opened.is_some() || updated
+    }
+
+    /// Opens the installed release in place of this one; on failure, this one keeps running.
+    fn restart(&mut self, tx: &mut Tx) {
+        let Some(version) = self.update.installed().map(str::to_string) else {
+            return;
+        };
+        match update::start_installed() {
+            Ok(()) => tx.quit(),
+            Err(error) => self.update = Update::RestartFailed(version, error),
+        }
     }
 
     fn is_installing(&self) -> bool {
@@ -619,6 +712,12 @@ fn setup(state: &mut State, waker: Waker) {
     let images = ImageCache::new(waker.clone());
     state.logo = Some(images.svg(LOGO_SVG, ui::LOGO_SIZE, 2.0));
     state.item_icons = load_item_icons(&images);
+    if !rune::is_headless() {
+        state.next_update_check = Some(update::next_check(
+            state.last_update_check,
+            SystemTime::now(),
+        ));
+    }
     state.watcher = Some(Watcher::start(move || waker()));
 }
 
@@ -640,7 +739,17 @@ fn poll(state: &mut State, time: f64, tx: &mut Tx) -> bool {
             state.receive(report);
         }
     }
+    let was_installing = matches!(state.update, Update::Installing(..));
     changed |= state.finish_jobs();
+    // A restart ends a session and clears the last one's results, so then it waits for the
+    // Restart button.
+    if was_installing
+        && matches!(state.update, Update::Installed(_))
+        && state.session == Session::Idle
+    {
+        state.restart(tx);
+    }
+    changed |= state.check_for_updates_when_due(tx);
     changed |= state.finish_saves();
     changed |= state.check_time_limit();
     if state.is_fishing() {
@@ -1546,5 +1655,134 @@ mod tests {
             load_fishing_key(&prefs),
             shortcut(PhysicalKeyCode::Space, Mods::default())
         );
+    }
+
+    #[test]
+    fn the_toolbar_shows_an_update_only_while_one_is_out() {
+        let mut runtime = runtime();
+        assert!(runtime.find("update-icon").is_none());
+        runtime.update(|state, _tx| state.update = Update::Available("99.0.0".into()));
+        runtime.frame(1.0 / 60.0);
+        assert!(runtime.find("update-icon").is_some());
+        runtime.update(|state, _tx| state.update = Update::UpToDate);
+        runtime.frame(1.0 / 60.0);
+        assert!(runtime.find("update-icon").is_none());
+    }
+
+    #[test]
+    fn an_update_finished_while_fishing_waits_for_restart() {
+        let mut runtime = ready();
+        tap(&mut runtime, "fish");
+        // Otherwise the poll below starts the installed copy for real.
+        assert!(runtime.state.is_fishing());
+        let (sender, result) = mpsc::channel();
+        if let Err(error) = sender.send(Ok(())) {
+            panic!("couldn't finish the install: {error}");
+        }
+        runtime.update(|state, tx| {
+            state.update = Update::Installing("99.0.0".into(), result);
+            poll(state, tx.clock(), tx);
+        });
+        runtime.frame(1.0 / 60.0);
+        assert!(runtime.state.is_fishing(), "the session goes on");
+        assert!(matches!(runtime.state.update, Update::Installed(_)));
+        assert!(runtime.find("update-icon").is_some(), "offers a restart");
+    }
+
+    /// Hands the app a check that already finished with `result`.
+    fn finish_check(
+        runtime: &mut Runtime<State>,
+        by: update::Check,
+        result: Result<String, String>,
+    ) {
+        let (sender, received) = mpsc::channel();
+        if let Err(error) = sender.send(result) {
+            panic!("couldn't finish the check: {error}");
+        }
+        runtime.update(|state, tx| {
+            state.update = Update::Checking(received, by);
+            poll(state, tx.clock(), tx);
+        });
+    }
+
+    #[test]
+    fn a_failed_scheduled_check_stays_quiet_and_retries_soon() {
+        let mut runtime = runtime();
+        let later = SystemTime::now() + 10 * update::CHECK_EVERY;
+        runtime.update(|state, _tx| state.next_update_check = Some(later));
+        let before = Box::new(Update::Failed("an earlier error".into()));
+        finish_check(
+            &mut runtime,
+            update::Check::Scheduled(before),
+            Err("offline".into()),
+        );
+        assert!(
+            matches!(&runtime.state.update, Update::Failed(error) if error == "an earlier error"),
+            "keeps what was shown before"
+        );
+        let Some(next) = runtime.state.next_update_check else {
+            panic!("no check scheduled");
+        };
+        assert!(next <= SystemTime::now() + update::RETRY_AFTER);
+    }
+
+    #[test]
+    fn a_failed_check_the_user_asked_for_shows_why() {
+        let mut runtime = runtime();
+        finish_check(&mut runtime, update::Check::Asked, Err("offline".into()));
+        assert!(matches!(&runtime.state.update, Update::Failed(error) if error == "offline"));
+    }
+
+    #[test]
+    fn a_check_that_finds_nothing_waits_a_day() {
+        let mut runtime = runtime();
+        runtime.update(|state, _tx| state.next_update_check = Some(SystemTime::UNIX_EPOCH));
+        // An already-due check would start before this one lands, so it's turned off meanwhile.
+        runtime.update(|state, _tx| state.check_for_updates = false);
+        finish_check(
+            &mut runtime,
+            update::Check::Scheduled(Box::new(Update::Unchecked)),
+            Ok("0.0.1".into()),
+        );
+        assert!(matches!(runtime.state.update, Update::UpToDate));
+        assert!(runtime.state.last_update_check.is_some());
+        let Some(next) = runtime.state.next_update_check else {
+            panic!("no check scheduled");
+        };
+        assert!(next > SystemTime::now() + update::CHECK_EVERY - Duration::from_secs(60));
+    }
+
+    #[test]
+    fn turning_checks_off_keeps_a_due_check_from_starting() {
+        let mut runtime = runtime();
+        tap(&mut runtime, "settings");
+        assert!(runtime.find("check-for-updates").is_some());
+        runtime.update(|state, _tx| state.toggle_update_checks());
+        assert!(!runtime.state.check_for_updates);
+        runtime.update(|state, tx| {
+            state.next_update_check = Some(SystemTime::UNIX_EPOCH);
+            poll(state, tx.clock(), tx);
+        });
+        assert!(matches!(runtime.state.update, Update::Unchecked));
+    }
+
+    #[test]
+    fn an_update_finished_with_results_on_screen_waits_for_restart() {
+        let mut runtime = ready();
+        tap(&mut runtime, "fish");
+        tap(&mut runtime, "stop");
+        assert!(
+            matches!(runtime.state.session, Session::Stopped(_)),
+            "a restart here would start the installed app"
+        );
+        let (sender, result) = mpsc::channel();
+        if let Err(error) = sender.send(Ok(())) {
+            panic!("couldn't finish the install: {error}");
+        }
+        runtime.update(|state, tx| {
+            state.update = Update::Installing("99.0.0".into(), result);
+            poll(state, tx.clock(), tx);
+        });
+        assert!(matches!(runtime.state.update, Update::Installed(_)));
     }
 }

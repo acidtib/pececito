@@ -7,7 +7,7 @@ use rune::{
 };
 use rune_kit::{
     Button, ButtonVariant, ControlSize, IconButton, IconButtonVariant, Kit, Placement,
-    SegmentedControl, ShortcutRecorder, Spinner, popover, scrim,
+    SegmentedControl, ShortcutRecorder, Spinner, Switch, popover, scrim,
 };
 
 use crate::update::{self, Update};
@@ -291,10 +291,55 @@ fn main_toolbar(state: &State, kit: &Kit) -> El {
         .pointer(true)
         .key("settings")
         .help("Settings");
-    toolbar(kit)
-        .child(connection(state, kit).grow(1.0))
-        .child(reset)
-        .child(settings)
+    let mut bar = toolbar(kit).child(connection(state, kit).grow(1.0));
+    if let Some(update) = update_icon(state, kit) {
+        bar = bar.child(update);
+    }
+    bar.child(reset).child(settings)
+}
+
+/// A blue square beside the toolbar's icons while a newer release is out or installing.
+fn update_icon(state: &State, kit: &Kit) -> Option<El> {
+    let square = |button: Button| button.build(kit).w(24.0).px(0.0).key("update-icon");
+    let glyph = |shape: &'static Icon| move |_: TextStyle, ink: Color| icon(shape, 16.0).color(ink);
+    let button = match &state.update {
+        Update::Available(version) => {
+            let (label, shape) = if update::installs_itself() {
+                (format!("Update to version {version}"), &DOWNLOAD)
+            } else {
+                (format!("Download version {version}"), &EXTERNAL)
+            };
+            Button::new(label)
+                .variant(ButtonVariant::Contrast)
+                .label_with(glyph(shape))
+        }
+        Update::Installed(version) | Update::RestartFailed(version, _) => {
+            Button::new(format!("Restart to use version {version}"))
+                .help(if state.is_fishing() {
+                    "This ends your session"
+                } else {
+                    "Close and reopen Pececito on the new version"
+                })
+                .variant(ButtonVariant::Contrast)
+                .label_with(glyph(&ROTATE_CW))
+        }
+        Update::Installing(version, _) | Update::Opening(version, _) => {
+            let label = if matches!(state.update, Update::Opening(..)) {
+                format!("Opening the page for version {version}")
+            } else {
+                format!("Installing version {version}")
+            };
+            let spinner = Spinner::new().size(14.0).color(kit.c.icon_muted).build(kit);
+            let busy = Button::new(label)
+                .variant(ButtonVariant::Loading)
+                .label_with(move |_, _| spinner);
+            return Some(square(busy).pointer(false));
+        }
+        Update::Unchecked | Update::Checking(..) | Update::UpToDate | Update::Failed(_) => {
+            return None;
+        }
+    };
+    Some(square(button.on_press_tx(State::advance_update)).pointer(true))
 }
 
 fn connection(state: &State, kit: &Kit) -> El {
@@ -965,7 +1010,7 @@ fn settings_screen(state: &State, kit: &Kit) -> El {
         .child(settings_section(
             kit,
             "Updates",
-            vec![update_setting(state, kit)],
+            vec![update_setting(state, kit), update_checks_setting(state, kit)],
         ))
         .child(about(state, kit))
 }
@@ -1006,7 +1051,7 @@ fn update_setting(state: &State, kit: &Kit) -> El {
             c.text_muted,
             "Check for updates",
         ),
-        Update::Checking(_) => ("Checking.".to_string(), c.text_muted, "Checking"),
+        Update::Checking(..) => ("Checking.".to_string(), c.text_muted, "Checking"),
         Update::UpToDate => (
             "You have the latest release.".to_string(),
             c.text_muted,
@@ -1035,32 +1080,40 @@ fn update_setting(state: &State, kit: &Kit) -> El {
             "Updating",
         ),
         Update::Installed(version) => (
-            format!("Version {version} is installed. Close and reopen Pececito to use it."),
+            format!("Version {version} is installed. Restart Pececito to use it."),
             c.text_base,
-            "Updated",
+            "Restart",
+        ),
+        Update::RestartFailed(version, error) => (
+            format!("{error} Close and reopen Pececito to use version {version}."),
+            c.danger.fg,
+            "Restart",
         ),
         Update::Failed(error) => (error.clone(), c.danger.fg, "Check for updates"),
     };
     let button = match &state.update {
-        Update::Checking(_) | Update::Installing(..) | Update::Opening(..) => {
+        Update::Checking(..) | Update::Installing(..) | Update::Opening(..) => {
             busy_button(kit, label)
         }
         Update::Available(_) if update::installs_itself() => {
             setting_button(label, &DOWNLOAD, ButtonVariant::Contrast)
         }
         Update::Available(_) => setting_button(label, &EXTERNAL, ButtonVariant::Contrast),
-        Update::Installed(_) => setting_button(label, &CIRCLE_CHECK, ButtonVariant::Outline)
-            .disabled(true)
-            .help("Close and reopen Pececito to use it"),
+        Update::Installed(_) | Update::RestartFailed(..) if state.is_fishing() => {
+            setting_button(label, &ROTATE_CW, ButtonVariant::Contrast)
+                .help("This ends your session")
+        }
+        Update::Installed(_) | Update::RestartFailed(..) => {
+            setting_button(label, &ROTATE_CW, ButtonVariant::Contrast)
+        }
         Update::Unchecked | Update::UpToDate | Update::Failed(_) => {
             setting_button(label, &ROTATE_CW, ButtonVariant::Outline)
         }
     };
-    let ready = !state.update.is_busy() && !matches!(state.update, Update::Installed(_));
     let button = button
-        .on_press(State::advance_update)
+        .on_press_tx(State::advance_update)
         .build(kit)
-        .pointer(ready)
+        .pointer(!state.update.is_busy())
         .key("update");
     row()
         .w_full()
@@ -1073,6 +1126,27 @@ fn update_setting(state: &State, kit: &Kit) -> El {
             color,
         ))
         .child(button)
+}
+
+fn update_checks_setting(state: &State, kit: &Kit) -> El {
+    let switch = Switch::new(state.check_for_updates)
+        .label("Check automatically")
+        .hide_label()
+        .on_toggle(State::toggle_update_checks)
+        .build(kit)
+        .pointer(true)
+        .key("check-for-updates");
+    row()
+        .w_full()
+        .gap(12.0)
+        .center_y()
+        .child(setting_text(
+            kit,
+            "Check automatically",
+            "Once a day. A new version shows as an icon in the toolbar.".to_string(),
+            kit.c.text_muted,
+        ))
+        .child(switch)
 }
 
 fn config_file_setting(state: &State, kit: &Kit) -> El {

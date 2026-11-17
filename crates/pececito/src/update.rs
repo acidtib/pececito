@@ -3,27 +3,48 @@
 use std::env;
 use std::ffi::OsStr;
 use std::io::Write;
+use std::mem;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::{self, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
+use std::time::{Duration, SystemTime};
 
 const RELEASES: &str = "https://github.com/acidtib/pececito/releases";
 const INSTALL_SCRIPT: &str = include_str!("../../../script/install.sh");
+/// Rune's relaunch handshake: a process started with this set to a pid waits for that process
+/// to exit before it opens its window.
+const RELAUNCH_AFTER: &str = "RUNE_RELAUNCH_AFTER";
+/// Set on a launch Rune handed on to this process; the new one must not inherit it.
+const INSTANCE_HANDED: &str = "RUNE_INSTANCE_HANDED";
 /// The `WAYLAND_DISPLAY` the app was started with, kept while it runs on XWayland.
 pub const SESSION_WAYLAND_DISPLAY: &str = "PECECITO_WAYLAND_DISPLAY";
 
+/// How often scheduled checks run, and how soon one runs again after failing; Sparkle's default
+/// interval and its shortest.
+pub const CHECK_EVERY: Duration = Duration::from_secs(24 * 60 * 60);
+pub const RETRY_AFTER: Duration = Duration::from_secs(60 * 60);
+
+/// Who started a check. Only one the user asked for shows its error; a scheduled one that
+/// fails goes back to what was shown before it.
+pub enum Check {
+    Scheduled(Box<Update>),
+    Asked,
+}
+
 pub enum Update {
     Unchecked,
-    Checking(Receiver<Result<String, String>>),
+    Checking(Receiver<Result<String, String>>, Check),
     UpToDate,
     /// A newer release, by version.
     Available(String),
     Installing(String, Receiver<Result<(), String>>),
     /// The browser is opening the release's page, for a copy that can't replace itself.
     Opening(String, Receiver<Result<(), String>>),
-    /// The new release is on disk; this process is still the old one.
+    /// The new release is on disk; this process is still the old one until it restarts.
     Installed(String),
+    /// The new release is on disk but didn't start, by version and why.
+    RestartFailed(String, String),
     Failed(String),
 }
 
@@ -33,7 +54,7 @@ impl Update {
     pub fn advance(&mut self, wake: impl FnOnce() + Send + 'static) {
         match self {
             Update::Unchecked | Update::UpToDate | Update::Failed(_) => {
-                *self = Update::Checking(run(latest_version, wake));
+                *self = Update::Checking(run(latest_version, wake), Check::Asked);
             }
             Update::Available(version) => {
                 let version = version.clone();
@@ -45,23 +66,60 @@ impl Update {
                     Update::Opening(version, run(move || open(OsStr::new(&page)), wake))
                 };
             }
-            Update::Checking(_)
+            Update::Checking(..)
             | Update::Installing(..)
             | Update::Opening(..)
-            | Update::Installed(_) => {}
+            | Update::Installed(_)
+            | Update::RestartFailed(..) => {}
+        }
+    }
+
+    /// Starts a scheduled check, unless one runs or a release has already been found.
+    pub fn check_in_background(&mut self, wake: impl FnOnce() + Send + 'static) {
+        if self.can_check() {
+            let before = mem::replace(self, Update::Unchecked);
+            *self = Update::Checking(
+                run(latest_version, wake),
+                Check::Scheduled(Box::new(before)),
+            );
+        }
+    }
+
+    pub fn can_check(&self) -> bool {
+        matches!(
+            self,
+            Update::Unchecked | Update::UpToDate | Update::Failed(_)
+        )
+    }
+
+    pub fn is_checking(&self) -> bool {
+        matches!(self, Update::Checking(..))
+    }
+
+    /// The release on disk waiting for a restart, if there is one.
+    pub fn installed(&self) -> Option<&str> {
+        match self {
+            Update::Installed(version) | Update::RestartFailed(version, _) => Some(version),
+            _ => None,
         }
     }
 
     /// Takes in finished work; returns whether any finished.
     pub fn finish(&mut self) -> bool {
         let next = match self {
-            Update::Checking(result) => match received(result) {
+            Update::Checking(result, by) => match received(result) {
                 None => return false,
                 Some(Ok(latest)) if is_newer(&latest, env!("CARGO_PKG_VERSION")) => {
                     Update::Available(latest)
                 }
                 Some(Ok(_)) => Update::UpToDate,
-                Some(Err(error)) => Update::Failed(error),
+                Some(Err(error)) => match by {
+                    Check::Scheduled(before) => {
+                        eprintln!("pececito: the scheduled update check failed: {error}");
+                        mem::replace(before.as_mut(), Update::Unchecked)
+                    }
+                    Check::Asked => Update::Failed(error),
+                },
             },
             Update::Installing(version, result) => match received(result) {
                 None => return false,
@@ -82,8 +140,17 @@ impl Update {
     pub fn is_busy(&self) -> bool {
         matches!(
             self,
-            Update::Checking(_) | Update::Installing(..) | Update::Opening(..)
+            Update::Checking(..) | Update::Installing(..) | Update::Opening(..)
         )
+    }
+}
+
+/// When the next scheduled check is due, from when the last one succeeded. A time ahead of
+/// `now` means the clock was set back, so it doesn't hold checks off.
+pub fn next_check(last: Option<SystemTime>, now: SystemTime) -> SystemTime {
+    match last {
+        Some(last) if last <= now => last + CHECK_EVERY,
+        _ => now,
     }
 }
 
@@ -114,9 +181,7 @@ pub fn installs_itself() -> bool {
     if cfg!(not(target_os = "linux")) {
         return false;
     }
-    let app = env::var_os("HOME")
-        .map(|home| PathBuf::from(home).join(".local").join("pececito.app"))
-        .and_then(|app| app.canonicalize().ok());
+    let app = installed_app().and_then(|app| app.canonicalize().ok());
     let running = env::current_exe()
         .ok()
         .and_then(|running| running.canonicalize().ok());
@@ -124,6 +189,33 @@ pub fn installs_itself() -> bool {
         (Some(app), Some(running)) => running.starts_with(app),
         _ => false,
     }
+}
+
+fn installed_app() -> Option<PathBuf> {
+    env::var_os("HOME").map(|home| PathBuf::from(home).join(".local").join("pececito.app"))
+}
+
+/// Starts the copy the install script put in place, which opens once this process exits. Rune's
+/// own relaunch can't: it starts `current_exe`, the file the script just deleted.
+pub fn start_installed() -> Result<(), String> {
+    let program = installed_app()
+        .map(|app| app.join("bin").join("pececito"))
+        .ok_or("Can't find the new version: HOME isn't set.")?;
+    let mut command = Command::new(&program);
+    command
+        .args(env::args_os().skip(1))
+        .env_remove(INSTANCE_HANDED)
+        .env(RELAUNCH_AFTER, process::id().to_string())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    if let Ok(folder) = env::current_dir() {
+        command.current_dir(folder);
+    }
+    command
+        .spawn()
+        .map(drop)
+        .map_err(|error| format!("Couldn't start the new version: {error}."))
 }
 
 /// A command that doesn't flash a console window on Windows, and gets back the Wayland session
@@ -254,6 +346,16 @@ mod tests {
         );
         assert_eq!(version_in(".../releases/tag/vnext"), None);
         assert_eq!(version_in(""), None);
+    }
+
+    #[test]
+    fn schedules_a_check_a_day_after_the_last() {
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+        assert_eq!(next_check(None, now), now);
+        let hour_ago = now - Duration::from_secs(60 * 60);
+        assert_eq!(next_check(Some(hour_ago), now), hour_ago + CHECK_EVERY);
+        let ahead = now + Duration::from_secs(60);
+        assert_eq!(next_check(Some(ahead), now), now);
     }
 
     #[test]
