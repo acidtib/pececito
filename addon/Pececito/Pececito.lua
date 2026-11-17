@@ -5,7 +5,7 @@
 -- The app reads the same layout, so change both together and give the addon a new version.
 
 -- The "## Version" in Pececito.toc.
-local VERSION = 4
+local VERSION = 5
 local MAGENTA = 5
 local CYAN = 3
 local VERSION_CELLS = 2
@@ -152,9 +152,15 @@ local function isCasting()
 end
 
 -- Item data can be missing right after login; an unknown item counts as a pole, so the app
--- isn't told to stop for a pole that is there.
+-- isn't told to stop for a pole that is there. Nil when the game hides the item as a secret.
 local function holdsFishingPole()
-    local itemID = GetInventoryItemID and readable(GetInventoryItemID("player", MAIN_HAND_SLOT))
+    if not GetInventoryItemID then
+        return true
+    end
+    local itemID = GetInventoryItemID("player", MAIN_HAND_SLOT)
+    if issecretvalue and issecretvalue(itemID) then
+        return nil
+    end
     if not itemID then
         return false
     end
@@ -163,7 +169,9 @@ local function holdsFishingPole()
         return true
     end
     local ok, _, _, _, _, _, classID, subclassID = pcall(query, itemID)
-    classID, subclassID = readable(classID), readable(subclassID)
+    if ok and issecretvalue and (issecretvalue(classID) or issecretvalue(subclassID)) then
+        return nil
+    end
     if not ok or classID == nil then
         return true
     end
@@ -288,15 +296,18 @@ strip:SetScript("OnUpdate", function(_, elapsed)
     showNextLoot(sinceUpdate)
     sinceUpdate = 0
     trackMoves()
-    -- The app waits out a busy player, which suits a fight.
-    if inCombat() then
-        show(STATE_BUSY)
-    elseif isFishing() then
-        show(STATE_FISHING)
-    elseif isCasting() then
-        show(STATE_BUSY)
-    elseif not holdsFishingPole() then
+    local pole = holdsFishingPole()
+    local fishing = isFishing()
+    -- A missing pole comes first, as the app reads any other state as a pole in hand; a fishing
+    -- channel proves there is one. The app waits out a busy player, which suits a fight.
+    if pole == false and not fishing then
         show(STATE_NO_POLE)
+    elseif inCombat() then
+        show(STATE_BUSY)
+    elseif fishing then
+        show(STATE_FISHING)
+    elseif isCasting() or pole == nil then
+        show(STATE_BUSY)
     else
         show(STATE_IDLE)
     end

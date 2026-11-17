@@ -183,9 +183,9 @@ pub enum PauseReason {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Activity {
     Idle,
-    /// Idle, with no fishing pole in hand.
+    /// No fishing pole in hand and not fishing, whatever else the player is doing.
     NoPole,
-    /// Casting something other than fishing, such as applying a lure.
+    /// In combat, or casting something other than fishing, such as applying a lure.
     Busy,
     Fishing,
 }

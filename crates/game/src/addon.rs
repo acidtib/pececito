@@ -51,9 +51,9 @@ pub struct Loot {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PlayerState {
     Idle,
-    /// Idle, with no fishing pole in hand.
+    /// No fishing pole in hand and not fishing, whatever else the player is doing.
     NoPole,
-    /// Casting something other than fishing, such as applying a lure.
+    /// In combat, or casting something other than fishing, such as applying a lure.
     Busy,
     Fishing,
 }
@@ -633,7 +633,7 @@ mod tests {
             });
         assert_eq!(
             (addon_version(), fingerprint),
-            (Some(4), 7_903_933_209_488_971_029)
+            (Some(5), 17_154_879_250_868_598_334)
         );
     }
 }

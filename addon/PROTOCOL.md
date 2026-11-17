@@ -33,7 +33,7 @@ Cells run left to right from the corner of the window:
 | 1     | Magenta (5)   | Marks the strip. Its width tells the app the cell size.  |
 | 1     | Cyan (3)      | Marks the strip.                                         |
 | 2     | Addon version | The `## Version` in `Pececito.toc`.                      |
-| 1     | Player state  | 0 idle, 1 no fishing pole, 2 other cast, 3 fishing.      |
+| 1     | Player state  | 0 idle, 1 no fishing pole, 2 busy, 3 fishing.            |
 | 1     | Moves         | Goes up by one each time the player starts moving.       |
 | 1     | Loot counter  | Goes up by one with each item looted from fishing.       |
 | 7     | Loot item     | The id of the last item looted.                          |
@@ -43,6 +43,9 @@ Cells run left to right from the corner of the window:
 The two markers and the version never move. Everything after the version belongs to that version:
 the app reads it only when the version is the one it ships, and otherwise treats the addon as not
 loaded. That is what you see between updating the addon and typing `/reload`.
+
+No fishing pole wins over every state but fishing, so busy (in combat or casting something else)
+and fishing both mean a pole is in hand.
 
 The checksum covers every cell between the markers and the checksum itself. Number those cells from
 1; the checksum is the sum of each cell times its number, modulo 64. The app drops a strip whose
