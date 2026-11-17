@@ -16,6 +16,11 @@ curl -fsSL https://raw.githubusercontent.com/acidtib/pececito/main/script/instal
 
 Windows: grab `Pececito-x86_64.exe` from the [latest release](https://github.com/acidtib/pececito/releases/latest).
 
+On a Wayland desktop, Pececito runs through XWayland, the same way the game does, so the window
+reopens where you left it. Without XWayland it runs on Wayland, and your desktop picks where the
+window opens each time. If you use fractional scaling, XWayland can draw the window slightly
+blurry, depending on your desktop's XWayland scaling setting.
+
 ## Fish
 
 1. Bind a key to fishing, turn on auto loot, keep sound effects on.

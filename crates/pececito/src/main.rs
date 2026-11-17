@@ -185,6 +185,9 @@ struct State {
     waker: Option<Waker>,
     /// Pececito's own window, to save where it sits when it closes.
     app_window: Option<WindowHandle>,
+    /// Where the X11 window's frame sits, followed while it's open.
+    frame_positions: Option<Receiver<(i32, i32)>>,
+    frame_position: Option<(i32, i32)>,
     /// The app icon for the About section, decoded off the UI thread.
     logo: Option<Image>,
 }
@@ -217,7 +220,16 @@ impl State {
             update: Update::Unchecked,
             waker: None,
             app_window: None,
+            frame_positions: None,
+            frame_position: None,
             logo: None,
+        }
+    }
+
+    /// Nothing on screen shows the position, so this changes no visible state.
+    fn drain_frame_positions(&mut self) {
+        if let Some(positions) = &self.frame_positions {
+            self.frame_position = positions.try_iter().last().or(self.frame_position);
         }
     }
 
@@ -613,6 +625,7 @@ fn setup(state: &mut State, waker: Waker) {
 fn poll(state: &mut State, time: f64, tx: &mut Tx) -> bool {
     let mut changed = false;
     state.clock = time;
+    state.drain_frame_positions();
     if let Some(watcher) = &state.watcher {
         let results = watcher.drain();
         changed |= !results.is_empty();
@@ -649,8 +662,8 @@ fn on_key(state: &mut State, event: &KeyEvent, _tx: &mut Tx) -> bool {
     false
 }
 
-/// Saves where the window sits. Wayland keeps window positions from apps, so there it saves
-/// nothing and the compositor places the window.
+/// Saves where the window sits. A Wayland window can't see its position, so without XWayland it
+/// saves nothing and the compositor places the window.
 fn save_window_position(state: &mut State, _tx: &mut Tx) {
     let Some(placement) = state.app_window.as_ref().and_then(WindowHandle::placement) else {
         return;
@@ -658,7 +671,8 @@ fn save_window_position(state: &mut State, _tx: &mut Tx) {
     if placement.minimized || placement.maximized || placement.full_screen {
         return;
     }
-    let position = placement.position;
+    state.drain_frame_positions();
+    let position = state.frame_position.unwrap_or(placement.position);
     state.save(move |prefs| prefs.set(WINDOW_POSITION_PREF, &position));
     // The process may end once the window closes; let queued writes land first.
     if let Err(error) = state.settings.flush(SAVE_ON_CLOSE_LIMIT) {
@@ -669,6 +683,32 @@ fn save_window_position(state: &mut State, _tx: &mut Tx) {
             eprintln!("pececito: couldn't save settings: {error}");
         }
     }
+}
+
+fn follow_frame(window: u32) -> Receiver<(i32, i32)> {
+    let (sender, receiver) = mpsc::channel();
+    thread::spawn(move || {
+        if let Err(error) = game::follow_frame(window, sender) {
+            eprintln!("pececito: stopped following the window's position: {error}");
+        }
+    });
+    receiver
+}
+
+#[cfg(target_os = "linux")]
+fn x11_window_id(window: &WindowHandle) -> Option<u32> {
+    use rune::raw_window_handle::RawWindowHandle;
+    let raw = window.with_raw_handle(|handle| handle.as_raw()).ok()?;
+    match raw {
+        RawWindowHandle::Xlib(handle) => u32::try_from(handle.window).ok(),
+        RawWindowHandle::Xcb(handle) => Some(handle.window.get()),
+        _ => None,
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn x11_window_id(_window: &WindowHandle) -> Option<u32> {
+    None
 }
 
 /// The saved position, while a display still shows the top of the window to grab it by.
@@ -685,7 +725,40 @@ fn saved_window_position(prefs: &Prefs, displays: &[Display]) -> Option<(i32, i3
         .then_some((x, y))
 }
 
+/// Wayland keeps window positions from apps, so where XWayland is there the app starts itself
+/// again on it, and its saved position works on every desktop. The variable can't be removed in
+/// place without `unsafe`.
+#[cfg(target_os = "linux")]
+fn prefer_x11() {
+    use std::os::unix::process::CommandExt;
+    let Some(wayland) = std::env::var_os("WAYLAND_DISPLAY") else {
+        return;
+    };
+    if std::env::var_os("DISPLAY").is_none_or(|display| display.is_empty())
+        || !game::x11_reachable()
+    {
+        return;
+    }
+    let executable = match std::env::current_exe() {
+        Ok(executable) => executable,
+        Err(error) => {
+            eprintln!("pececito: couldn't find itself to start on XWayland: {error}");
+            return;
+        }
+    };
+    let error = std::process::Command::new(executable)
+        .args(std::env::args_os().skip(1))
+        .env_remove("WAYLAND_DISPLAY")
+        .env(update::SESSION_WAYLAND_DISPLAY, wayland)
+        .exec();
+    eprintln!("pececito: couldn't start on XWayland: {error}");
+}
+
+#[cfg(not(target_os = "linux"))]
+fn prefer_x11() {}
+
 fn main() {
+    prefer_x11();
     // Desktops match the window to `pececito.desktop`, and through it to the installed icon.
     rune::set_app_id(APP_ID);
     let spec = AppSpec::<State> {
@@ -700,7 +773,10 @@ fn main() {
     let handle = app.handle();
     let app = app.on_window(move |window| {
         let window = window.clone();
-        handle.update(move |state, _tx| state.app_window = Some(window));
+        handle.update(move |state, _tx| {
+            state.frame_positions = x11_window_id(&window).map(follow_frame);
+            state.app_window = Some(window);
+        });
     });
     let prefs = Prefs::open(APP_ID);
     rune::run_windows(move |displays| {

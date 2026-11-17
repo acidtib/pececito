@@ -10,6 +10,8 @@ use std::thread;
 
 const RELEASES: &str = "https://github.com/acidtib/pececito/releases";
 const INSTALL_SCRIPT: &str = include_str!("../../../script/install.sh");
+/// The `WAYLAND_DISPLAY` the app was started with, kept while it runs on XWayland.
+pub const SESSION_WAYLAND_DISPLAY: &str = "PECECITO_WAYLAND_DISPLAY";
 
 pub enum Update {
     Unchecked,
@@ -124,10 +126,15 @@ pub fn installs_itself() -> bool {
     }
 }
 
-/// A command that doesn't flash a console window on Windows.
+/// A command that doesn't flash a console window on Windows, and gets back the Wayland session
+/// the app left for XWayland, so a browser it opens isn't moved there too.
 fn quiet(program: &str) -> Command {
-    #[cfg_attr(not(windows), expect(unused_mut))]
     let mut command = Command::new(program);
+    if let Some(wayland) = env::var_os(SESSION_WAYLAND_DISPLAY) {
+        command
+            .env("WAYLAND_DISPLAY", wayland)
+            .env_remove(SESSION_WAYLAND_DISPLAY);
+    }
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -197,7 +204,7 @@ fn is_newer(latest: &str, current: &str) -> bool {
 /// Runs the install script for `version`, as installing by hand does.
 fn install(version: &str) -> Result<(), String> {
     let failed = |error: std::io::Error| format!("Can't run the installer: {error}");
-    let mut installer = Command::new("sh")
+    let mut installer = quiet("sh")
         .arg("-s")
         .env("PECECITO_VERSION", version)
         .stdin(Stdio::piped())

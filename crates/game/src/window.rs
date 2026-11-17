@@ -1,6 +1,12 @@
+use std::sync::mpsc::Sender;
+
 use x11rb::connection::Connection;
 use x11rb::errors::ReplyError;
-use x11rb::protocol::xproto::{AtomEnum, ConnectionExt, GetPropertyReply, Window};
+use x11rb::protocol::Event;
+use x11rb::protocol::xproto::{
+    AtomEnum, ChangeWindowAttributesAux, ConnectionExt, EventMask, GetPropertyReply, MapState,
+    Window,
+};
 use x11rb::rust_connection::RustConnection;
 
 use crate::{GameProcess, GameWindow, Rect};
@@ -99,6 +105,84 @@ impl FocusReader {
     pub fn has_focus(&self) -> Result<bool, String> {
         Ok(self.active_window()? == Some(self.window))
     }
+}
+
+/// Whether an X server accepts connections at `DISPLAY`.
+pub fn x11_reachable() -> bool {
+    connect().is_ok()
+}
+
+/// Sends where a window's frame sits, from its content's position and `_NET_FRAME_EXTENTS`,
+/// each time the window moves or its frame changes, until the window goes or the receiver is
+/// dropped. Toolkits look for a parent frame window, which KWin doesn't make. Unmapping freezes
+/// the position: on close the window manager drops the frame and moves the window back.
+pub fn follow_frame(window: u32, positions: Sender<(i32, i32)>) -> Result<(), String> {
+    let (connection, root) = connect()?;
+    let extents_atom = connection
+        .intern_atom(false, b"_NET_FRAME_EXTENTS")
+        .map_err(|error| format!("_NET_FRAME_EXTENTS: {error}"))?
+        .reply()
+        .map_err(|error| format!("_NET_FRAME_EXTENTS: {error}"))?
+        .atom;
+    let events = EventMask::STRUCTURE_NOTIFY | EventMask::PROPERTY_CHANGE;
+    connection
+        .change_window_attributes(window, &ChangeWindowAttributesAux::new().event_mask(events))
+        .map_err(|error| format!("watching window {window:#x}: {error}"))?
+        .check()
+        .map_err(|error| format!("watching window {window:#x}: {error}"))?;
+    let mut mapped = connection
+        .get_window_attributes(window)
+        .map_err(|error| format!("state of window {window:#x}: {error}"))?
+        .reply()
+        .map_err(|error| format!("state of window {window:#x}: {error}"))?
+        .map_state
+        == MapState::VIEWABLE;
+    let mut last = None;
+    loop {
+        if mapped {
+            let frame = frame_position(&connection, root, window, extents_atom)?;
+            if last != Some(frame) {
+                if positions.send(frame).is_err() {
+                    return Ok(());
+                }
+                last = Some(frame);
+            }
+        }
+        let event = connection
+            .wait_for_event()
+            .map_err(|error| format!("events of window {window:#x}: {error}"))?;
+        match event {
+            Event::MapNotify(_) => mapped = true,
+            Event::UnmapNotify(_) => mapped = false,
+            Event::DestroyNotify(_) => return Ok(()),
+            _ => {}
+        }
+    }
+}
+
+fn frame_position(
+    connection: &RustConnection,
+    root: Window,
+    window: Window,
+    extents_atom: u32,
+) -> Result<(i32, i32), String> {
+    let content = root_geometry(connection, root, window)?;
+    let extents = get_property(
+        connection,
+        window,
+        extents_atom,
+        AtomEnum::CARDINAL.into(),
+        4,
+    )?;
+    let extents: Vec<u32> = extents.value32().into_iter().flatten().collect();
+    let (left, top) = match extents.as_slice() {
+        &[left, _right, top, _bottom] => (
+            i32::try_from(left).unwrap_or(0),
+            i32::try_from(top).unwrap_or(0),
+        ),
+        _ => (0, 0),
+    };
+    Ok((content.x - left, content.y - top))
 }
 
 fn connect() -> Result<(RustConnection, Window), String> {

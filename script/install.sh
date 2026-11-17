@@ -80,7 +80,7 @@ linux() {
         kbuildsycoca6 --noincremental >/dev/null 2>&1 || echo "The KDE menu wasn't refreshed; it updates on your next login."
     fi
 
-    remember_window_position_on_kde || echo "The KDE window rule wasn't saved, so Pececito's window may not reopen where you left it."
+    remove_kde_window_rule || echo "The old KDE window rule 'Pececito: remember position' wasn't removed; delete it in System Settings, Window Rules, so Pececito reopens where you left it."
 
     echo "Pececito is installed. Open it from your app launcher, or run 'pececito'."
     case ":$PATH:" in
@@ -89,27 +89,34 @@ linux() {
     esac
 }
 
-# Wayland ignores window positions from apps, so on KDE a window rule has KWin remember Pececito's.
-remember_window_position_on_kde() {
+# Earlier installs added a KWin rule to remember the window's position. It kept the window
+# centered instead, and Pececito now saves its own position.
+remove_kde_window_rule() {
     if ! command -v kwriteconfig6 >/dev/null 2>&1 || ! command -v kreadconfig6 >/dev/null 2>&1; then
         return 0
     fi
     rule="pececito-position"
-    rules="$(kreadconfig6 --file kwinrulesrc --group General --key rules)" || return 1
-    case ",$rules," in
-        *",$rule,"*) ;;
-        *) rules="${rules:+$rules,}$rule" ;;
-    esac
-    # Called with ||, which turns set -e off in here, so each step checks itself.
-    kwriteconfig6 --file kwinrulesrc --group "$rule" --key Description "Pececito: remember position" &&
-        kwriteconfig6 --file kwinrulesrc --group "$rule" --key wmclass "pececito" &&
-        kwriteconfig6 --file kwinrulesrc --group "$rule" --key wmclassmatch 1 &&
-        kwriteconfig6 --file kwinrulesrc --group "$rule" --key positionrule 4 &&
-        kwriteconfig6 --file kwinrulesrc --group General --key rules "$rules" &&
-        kwriteconfig6 --file kwinrulesrc --group General --key count "$(echo "$rules" | tr ',' '\n' | grep -c .)" ||
-        return 1
+    found=""
+    # KWin 6 keeps the rule list in Order; older versions in rules and count.
+    for key in Order rules; do
+        list="$(kreadconfig6 --file kwinrulesrc --group General --key "$key")" || return 1
+        case ",$list," in
+            *",$rule,"*) ;;
+            *) continue ;;
+        esac
+        found=1
+        list="$(echo "$list" | tr ',' '\n' | grep -vx "$rule" | paste -sd, -)"
+        kwriteconfig6 --file kwinrulesrc --group General --key "$key" "$list" || return 1
+        if [ "$key" = "rules" ]; then
+            kwriteconfig6 --file kwinrulesrc --group General --key count "$(echo "$list" | tr ',' '\n' | grep -c .)" || return 1
+        fi
+    done
+    [ -n "$found" ] || return 0
+    for key in Description wmclass wmclassmatch positionrule position; do
+        kwriteconfig6 --file kwinrulesrc --group "$rule" --key "$key" --delete || return 1
+    done
     if command -v qdbus6 >/dev/null 2>&1; then
-        qdbus6 org.kde.KWin /KWin reconfigure >/dev/null 2>&1 || echo "KWin didn't reload its window rules; they apply on your next login."
+        qdbus6 org.kde.KWin /KWin reconfigure >/dev/null 2>&1 || true
     fi
 }
 

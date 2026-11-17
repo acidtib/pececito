@@ -42,7 +42,7 @@ pub use addon::{
 pub use audio::{CHUNK_FRAMES, GameAudio, SAMPLE_RATE};
 pub use keyboard::{Keyboard, Keystroke};
 pub use watcher::Watcher;
-pub use window::FocusReader;
+pub use window::{FocusReader, follow_frame, x11_reachable};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GameProcess {
