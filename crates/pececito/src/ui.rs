@@ -2,8 +2,8 @@ use std::path::Path;
 use std::sync::OnceLock;
 
 use rune::{
-    Color, Cursor, Cx, Drag, El, Icon, Phase as DragPhase, ScrollSpec, TextStyle, Tx, col, el, row,
-    text,
+    Color, Cursor, Cx, Drag, El, Icon, LoopSpec, Phase as DragPhase, ScrollSpec, TextStyle, Tx,
+    col, el, icon, row, text,
 };
 use rune_kit::{
     Button, ButtonVariant, ControlSize, IconButton, IconButtonVariant, Kit, Placement,
@@ -98,6 +98,24 @@ static ARROW_LEFT: Icon = Icon {
     name: "pececito-arrow-left",
     view: 24.0,
     body: r#"<path d="M12 19l-7-7 7-7M19 12H5" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>"#,
+};
+
+static CIRCLE_CHECK: Icon = Icon {
+    name: "pececito-circle-check",
+    view: 24.0,
+    body: r#"<circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2"/><path d="M8.5 12l2.5 2.5 4.5-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>"#,
+};
+
+static CIRCLE_ALERT: Icon = Icon {
+    name: "pececito-circle-alert",
+    view: 24.0,
+    body: r#"<circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 8v4.5M12 16h.01" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>"#,
+};
+
+static CIRCLE: Icon = Icon {
+    name: "pececito-circle",
+    view: 24.0,
+    body: r#"<circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2"/>"#,
 };
 
 fn kit(dark: bool) -> &'static Kit {
@@ -239,28 +257,41 @@ fn main_toolbar(state: &State, kit: &Kit) -> El {
 
 fn connection(state: &State, kit: &Kit) -> El {
     let c = &kit.c;
-    let (label, dot, help) = match &state.game {
+    let status_icon = |glyph: &'static Icon, color: Color| icon(glyph, 16.0).color(color);
+    let pulsing = |color: Color| {
+        row().size(16.0, 16.0).center().child(
+            el().size(8.0, 8.0)
+                .radius(4.0)
+                .fill(color)
+                .looping(LoopSpec::opacity(1.6, 0.0, 0.3, 1.0)),
+        )
+    };
+    let (label, mark, help) = match &state.game {
         Game::Detected(Detection::Found(..)) => (
             "Connected",
-            c.success.icon,
+            status_icon(&CIRCLE_CHECK, c.success.icon),
             "Connected to the WoW Forever window".to_string(),
         ),
         Game::Detected(Detection::NoWindow(_)) => (
             "Game loading",
-            c.warning.icon,
+            pulsing(c.warning.icon),
             "Waiting for the game window".to_string(),
         ),
         Game::Detected(Detection::NotRunning) => (
             "Game not running",
-            c.icon_faint,
+            status_icon(&CIRCLE, c.icon_muted),
             "Pececito connects when you open WoW Forever".to_string(),
         ),
         Game::Searching => (
             "Looking for game",
-            c.icon_faint,
+            pulsing(c.icon_muted),
             "Looking for WoW Forever".to_string(),
         ),
-        Game::Error(error) => ("Can't connect", c.danger.icon, error.clone()),
+        Game::Error(error) => (
+            "Can't connect",
+            status_icon(&CIRCLE_ALERT, c.danger.icon),
+            error.clone(),
+        ),
     };
     row()
         .key("connection")
@@ -270,13 +301,8 @@ fn connection(state: &State, kit: &Kit) -> El {
         .center_y()
         .pl(8.0)
         .help(help)
-        .child(el().size(8.0, 8.0).radius(4.0).fill(dot).a11y_hidden())
-        .child(
-            text(label)
-                .font(kit.ty.ui_medium)
-                .color(c.text_base)
-                .a11y_hidden(),
-        )
+        .child(mark.a11y_hidden())
+        .child(text(label).font(kit.ty.ui).color(c.text_base).a11y_hidden())
 }
 
 /// What the bot is doing now, or why it can't start.
