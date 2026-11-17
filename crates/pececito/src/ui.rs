@@ -860,7 +860,12 @@ fn settings_screen(state: &State, kit: &Kit) -> El {
         .child(settings_section(
             kit,
             "Game",
-            vec![fishing_key_setting(state, kit), addon_setting(state, kit)],
+            vec![fishing_key_setting(state, kit)],
+        ))
+        .child(settings_section(
+            kit,
+            "Addon",
+            vec![addon_setting(state, kit)],
         ))
         .child(settings_section(
             kit,
