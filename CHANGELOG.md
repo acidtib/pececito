@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.4.0](https://github.com/acidtib/pececito/compare/v1.3.0...v1.4.0) (2026-11-17)
+
+
+### Features
+
+* **pececito:** add icons, color and busy states to buttons ([4fb00f4](https://github.com/acidtib/pececito/commit/4fb00f4ca754cc865d35f6ba4fd45ec6bd253857))
+* **pececito:** check for updates daily and restart into a new version ([a9b59a6](https://github.com/acidtib/pececito/commit/a9b59a6e9f87fca1d54f2b0bc4e5333d30530a43)), closes [#20](https://github.com/acidtib/pececito/issues/20)
+* **pececito:** give the addon its own section in settings ([927f021](https://github.com/acidtib/pececito/commit/927f0219a54a2cf90c8cf8f334b74bd1c31c7578))
+* **pececito:** show the game connection as a status icon with a pulse while waiting ([e3b9465](https://github.com/acidtib/pececito/commit/e3b9465fa2e74ccffd7929d7950264634fa5a8d1))
+
+
+### Bug Fixes
+
+* **addon:** report no fishing pole while in combat or casting ([c8cc8a0](https://github.com/acidtib/pececito/commit/c8cc8a0f8b7629882b64eec4987fb82531e29dee))
+* reopen the window where you left it on Wayland ([a198416](https://github.com/acidtib/pececito/commit/a198416394b35c091e9d16c8e8134aff61dcde4d)), closes [#21](https://github.com/acidtib/pececito/issues/21)
+
 ## [1.3.0](https://github.com/acidtib/pececito/compare/v1.2.0...v1.3.0) (2026-11-16)
 
 
